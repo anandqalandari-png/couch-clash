@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Couch Clash</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bowlby+One&family=DM+Sans:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/host.css">
+<script type="importmap">{ "imports": { "three": "/vendor/three/three.module.js" } }</script>
+</head>
+<body>
+<main id="lobby">
+  <header class="mast">
+    <h1>COUCH<br><span>CLASH</span></h1>
+    <p class="tag">One screen. Your phones are the controllers.</p>
+  </header>
+
+  <section class="join">
+    <div class="qr"><img id="qr" alt="QR code to join"></div>
+    <div class="how">
+      <div class="step">Scan, or open</div>
+      <div class="url" id="joinUrl">…</div>
+      <div class="step">and enter</div>
+      <div class="code" id="code">····</div>
+      <div class="hint" id="localHint" hidden>Running on localhost: phones can't reach this address. Deploy it, or open the laptop's network address instead.</div>
+    </div>
+  </section>
+
+  <section class="crew">
+    <h2>Players <small id="count">0 / 8</small></h2>
+    <ul id="players"></ul>
+    <p class="empty" id="noPlayers">Waiting for the first phone…</p>
+  </section>
+
+  <section class="games" id="games"></section>
+  <div class="toast" id="toast"></div>
+</main>
+
+<div id="stage" hidden></div>
+<script type="module" src="/js/host.js"></script>
+</body>
+</html>
