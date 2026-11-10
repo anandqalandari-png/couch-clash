@@ -1,7 +1,7 @@
 // Turbo Clash: split-screen 3D racing. Everything (physics, AI, rendering) runs on the laptop.
 import * as THREE from 'three';
 import { showResults } from './host.js';
-import { buildTrack, buildWorld, buildCar, nameTag, clamp, rnd } from './race-world.js';
+import { buildTrack, buildWorld, buildCar, nameTag, loadAssets, glow, canvasTex, BOT_MODELS, clamp, rnd } from './race-world.js';
 
 const MAX_RACERS = 5, POINTS = [10, 7, 5, 3, 2];
 
@@ -40,7 +40,7 @@ export function start(ctx) {
 
   // ---------- pick screen ----------
   const pickEl = document.createElement('div'); pickEl.className = 'pick';
-  pickEl.innerHTML = `<h2>TURBO CLASH</h2><p class="sub">Pick your car on your phone. The host picks the track and hits GO.</p><div class="tracks"></div><div class="grid"></div>`;
+  pickEl.innerHTML = `<h2>TURBO CLASH</h2><p class="sub">Pick your car on your phone. The host picks the track and hits GO. Drive through the ? boxes to grab items.</p><div class="tracks"></div><div class="grid"></div>`;
   stage.appendChild(pickEl);
   function renderPick() {
     const tr = pickEl.querySelector('.tracks'); tr.innerHTML = '';
@@ -65,8 +65,15 @@ export function start(ctx) {
   renderPick(); sendPick();
 
   // ---------- race ----------
-  function beginRace() {
-    phase = 'countdown'; pickEl.remove();
+  let stopped = false;
+  async function beginRace() {
+    if (phase !== 'pick') return;
+    phase = 'loading'; pickEl.remove();
+    const load = document.createElement('div'); load.className = 'bigmsg'; load.style.background = '#14110f'; load.innerHTML = '<span style="font-size:9vh">Loading track…</span>'; stage.appendChild(load);
+    for (const p of racers) ctx.to(p.id, { m: 'wait', title: 'Loading…', text: 'Get ready.' });
+    const assets = await loadAssets(TRACKS[trackIdx].theme);
+    if (stopped) return;
+    load.remove(); phase = 'countdown';
     for (const p of racers) p.races++;
     const T = buildTrack(TRACKS[trackIdx]), LAPS = T.def.laps;
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -76,29 +83,30 @@ export function start(ctx) {
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false;
     renderer.setScissorTest(true); stage.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
-    const world = buildWorld(scene, T, renderer), FX = world.particles;
+    const world = buildWorld(scene, T, renderer, assets), FX = world.particles;
     const white = new THREE.Color(0xffffff), smoke = new THREE.Color(0xd8d8d8), fire = new THREE.Color(0xffb02a), fire2 = new THREE.Color(0xff5a1a), cyan = new THREE.Color(0x8ff4ff), spark = new THREE.Color(0xffe14a);
     const overlay = document.createElement('div'); overlay.className = 'overlay'; stage.appendChild(overlay);
     const big = document.createElement('div'); big.className = 'bigmsg'; stage.appendChild(big);
 
     // cars: humans first, then CPU cars so there are always at least four on track
     const cars = [];
-    const mk = (p, typeIdx, color, name) => {
-      const type = CARS[typeIdx], mesh = buildCar(type.key, color); scene.add(mesh);
-      const tag = nameTag(name, color); tag.position.y = mesh.userData.tagY; mesh.add(tag); mesh.userData.blob = mesh.children.find((o) => o.isMesh && o.geometry.type === 'PlaneGeometry');
+    const mk = (p, typeIdx, color, name, botModel) => {
+      const type = CARS[typeIdx], mesh = buildCar(type.key, color, assets, botModel); scene.add(mesh);
+      const tag = nameTag(name, color); tag.position.y = mesh.userData.tagY; mesh.add(tag); mesh.userData.blob = mesh.userData.blob || mesh.children.find((o) => o.isMesh && o.geometry.type === 'PlaneGeometry');
+      const shield = new THREE.Mesh(new THREE.SphereGeometry(3.6, 20, 14), new THREE.MeshBasicMaterial({ color: 0x66e0ff, transparent: true, opacity: 0.28, depthWrite: false })); shield.visible = false; scene.add(shield);
       const ring = new THREE.Mesh(new THREE.RingGeometry(0.86, 1, 48), new THREE.MeshBasicMaterial({ color: 0xffe14a, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false }));
       ring.rotation.x = -Math.PI / 2; ring.visible = false; scene.add(ring);
       const flash = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), new THREE.MeshBasicMaterial({ color: 0xbff8ff, transparent: true, opacity: 0.8, depthWrite: false })); flash.visible = false; scene.add(flash);
       const beamG = new THREE.BufferGeometry(); beamG.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
       const beam = new THREE.Line(beamG, new THREE.LineBasicMaterial({ color: 0x9fe8ff })); beam.visible = false; beam.frustumCulled = false; scene.add(beam);
-      const c = { p, bot: !p, name, color, type, mesh, tag, ring, flash, beam, x: 0, z: 0, h: 0, speed: 0, idx: 0, total: 0, lat: 0, steer: 0, gas: false, brake: false,
+      const c = { p, bot: !p, name, color, type, mesh, tag, ring, flash, beam, shield, item: null, shieldT: 0, zapT: 0, botItemT: 0, x: 0, z: 0, h: 0, speed: 0, idx: 0, total: 0, lat: 0, steer: 0, gas: false, brake: false,
         boostT: 0, ghostT: 0, frozenT: 0, spinT: 0, kx: 0, kz: 0, cd: 4, finished: false, place: 0, stuckT: 0, lastTotal: 0, ringT: 0, flashT: 0, beamT: 0, noteT: 0,
         skill: rnd(0.86, 0.95), botLat: rnd(-0.5, 0.5), botPw: rnd(3, 9), ready: false, emit: 0 };
       cars.push(c); return c;
     };
     racers.forEach((p) => mk(p, picks.get(p.id), p.color, p.name));
     const botCols = ['#b9bec6', '#d6c38a', '#8fa0bd'];
-    for (let b = 0; cars.length < 4; b++) mk(null, (b * 2 + 1) % CARS.length, botCols[b % 3], 'CPU ' + (b + 1));
+    for (let b = 0; cars.length < 4; b++) mk(null, (b * 2 + 1) % CARS.length, botCols[b % 3], 'CPU ' + (b + 1), BOT_MODELS[b % BOT_MODELS.length]);
     cars.forEach((c, i) => {
       const row = Math.floor(i / 2), side = i % 2 ? 1 : -1, idx = (T.N - 6 - row * 5 + T.N) % T.N, lat = side * T.hw * 0.4;
       c.idx = idx; c.total = idx - T.N; c.x = T.px[idx] + T.tz[idx] * lat; c.z = T.pz[idx] - T.tx[idx] * lat; c.h = Math.atan2(T.tx[idx], T.tz[idx]); c.lastTotal = c.total;
@@ -110,11 +118,11 @@ export function start(ctx) {
       c.cam = new THREE.PerspectiveCamera(68, 1, 0.8, 4200); c.cam.layers.enableAll(); c.cam.layers.disable(1 + i); c.tag.layers.set(1 + i);
       c.camPos = new THREE.Vector3(c.x - Math.sin(c.h) * 30, 16, c.z - Math.cos(c.h) * 30); c.look = new THREE.Vector3(c.x, 1.5, c.z);
       const el = document.createElement('div'); el.className = 'rhud';
-      el.innerHTML = `<div class="lines"></div><div class="who"><i style="background:${c.color}"></i><span></span></div><div class="pos"></div><div class="lap"></div><div class="spd"><b>0</b><small>km/h</small></div><div class="note"></div><div class="pw"><b>${c.type.power}</b><u><s></s></u></div>`;
+      el.innerHTML = `<div class="lines"></div><div class="who"><i style="background:${c.color}"></i><span></span></div><div class="pos"></div><div class="lap"></div><div class="item"></div><div class="spd"><b>0</b><small>km/h</small></div><div class="note"></div><div class="pw"><b>${c.type.power}</b><u><s></s></u></div>`;
       el.querySelector('.who span').textContent = c.name; overlay.appendChild(el);
-      c.hud = { el, spd: el.querySelector('.spd b'), pos: el.querySelector('.pos'), lap: el.querySelector('.lap'), note: el.querySelector('.note'), pw: el.querySelector('.pw'), bar: el.querySelector('.pw s'), cache: {} };
+      c.hud = { el, item: el.querySelector('.item'), spd: el.querySelector('.spd b'), pos: el.querySelector('.pos'), lap: el.querySelector('.lap'), note: el.querySelector('.note'), pw: el.querySelector('.pw'), bar: el.querySelector('.pw s'), cache: {} };
     });
-    cars.filter((c) => c.bot).forEach((c) => c.tag.layers.set(0));
+    cars.filter((c) => c.bot).forEach((c) => { c.tag.layers.set(0); c.tag.scale.multiplyScalar(0.7); });
     const info = document.createElement('div'); info.className = 'rinfo'; info.innerHTML = `<h3>${T.def.name}</h3><ol></ol><canvas></canvas>`; overlay.appendChild(info);
     const mapC = info.querySelector('canvas'), mapX = mapC.getContext('2d'), standEl = info.querySelector('ol');
     let cells = [];
@@ -151,11 +159,11 @@ export function start(ctx) {
       else if (k === 'titan') {
         c.ring.visible = true; c.ringT = 0.5; c.ring.position.set(c.x, 0.5, c.z);
         for (let k = 0; k < 60; k++) { const a = Math.random() * 6.28, v = rnd(20, 60); FX.emit(c.x, 1, c.z, Math.cos(a) * v, rnd(4, 16), Math.sin(a) * v, rnd(0.4, 0.8), 0.9, spark, 1, 0.2, 30); }
-        for (const o of cars) { if (o === c || o.ghostT > 0 || o.finished) continue; const dx = o.x - c.x, dz = o.z - c.z, d = Math.hypot(dx, dz); if (d < 34) { o.kx = dx / (d || 1) * 34; o.kz = dz / (d || 1) * 34; o.spinT = 1.1; o.speed *= 0.45; note(o, 'SHOCKED!'); if (o.p) ctx.to(o.p.id, { e: 'hit' }); } }
+        for (const o of cars) { if (o === c || o.ghostT > 0 || o.finished) continue; const dx = o.x - c.x, dz = o.z - c.z, d = Math.hypot(dx, dz); if (d < 34 && !blocked(o)) { o.kx = dx / (d || 1) * 34; o.kz = dz / (d || 1) * 34; o.spinT = 1.1; o.speed *= 0.45; note(o, 'SHOCKED!'); if (o.p) ctx.to(o.p.id, { e: 'hit' }); } }
       } else if (k === 'frost') {
         let t = null, bd = 1e9;
         for (const o of cars) { if (o === c || o.ghostT > 0 || o.finished) continue; const ahead = o.total - c.total, d = Math.hypot(o.x - c.x, o.z - c.z); if (ahead > 0 && ahead < 110 && ahead < bd) { bd = ahead; t = o; } else if (!t && d < 45) t = o; }
-        if (t) { t.frozenT = 2.8; c.beamT = 0.35; c.beamTarget = t; c.beam.visible = true; note(t, 'FROZEN!'); if (t.p) ctx.to(t.p.id, { e: 'hit' }); } else { c.cd = 3; note(c, 'NO TARGET'); }
+        if (t) { c.beamT = 0.35; c.beamTarget = t; c.beam.visible = true; if (!blocked(t)) { t.frozenT = 2.8; note(t, 'FROZEN!'); if (t.p) ctx.to(t.p.id, { e: 'hit' }); } } else { c.cd = 3; note(c, 'NO TARGET'); }
       } else if (k === 'warp') {
         c.flash.position.set(c.x, 1.5, c.z); c.flash.visible = true; c.flashT = 0.4;
         for (let k = 0; k < 40; k++) FX.emit(c.x + rnd(-2, 2), rnd(0.5, 3), c.z + rnd(-2, 2), rnd(-6, 6), rnd(2, 12), rnd(-6, 6), rnd(0.4, 0.9), 0.8, cyan, 1, 0.3);
@@ -164,17 +172,77 @@ export function start(ctx) {
         if (c.camPos) { c.camPos.set(c.x - Math.sin(c.h) * 12, 6, c.z - Math.cos(c.h) * 12); }
       }
     }
+    // ---------- item boxes and pickups ----------
+    const ITEMS = { rocket: ['Rocket', '🚀'], mine: ['Mine', '💣'], shield: ['Shield', '🛡️'], turbo: ['Turbo', '🔥'], zap: ['Zap', '⚡'], swap: ['Swap', '🔀'] };
+    const boxTex = canvasTex(128, 128, (g2, w) => { const gr = g2.createLinearGradient(0, 0, w, w); gr.addColorStop(0, '#ffc62b'); gr.addColorStop(0.5, '#ff4b2b'); gr.addColorStop(1, '#b455ff'); g2.fillStyle = gr; g2.fillRect(0, 0, w, w); g2.lineWidth = 10; g2.strokeStyle = '#fff'; g2.strokeRect(5, 5, w - 10, w - 10); g2.fillStyle = '#fff'; g2.font = '900 96px "Bowlby One","Arial Black",sans-serif'; g2.textAlign = 'center'; g2.textBaseline = 'middle'; g2.fillText('?', w / 2, w / 2 + 6); });
+    const boxGeo = new THREE.BoxGeometry(2.6, 2.6, 2.6), boxMat = new THREE.MeshBasicMaterial({ map: boxTex }), boxes = [], rockets = [], mines = [];
+    for (const f of T.def.boxes || [0.22, 0.4, 0.68, 0.93]) for (const l of [-0.62, -0.21, 0.21, 0.62]) {
+      const i = Math.floor(f * T.N) % T.N, x = T.px[i] + T.tz[i] * l * T.hw, z = T.pz[i] - T.tx[i] * l * T.hw;
+      const mesh = new THREE.Mesh(boxGeo, boxMat); mesh.position.set(x, 2.2, z); mesh.add(glow(0xffc62b, 7, 0.55)); scene.add(mesh);
+      boxes.push({ x, z, t: 0, mesh, ph: Math.random() * 6 });
+    }
+    const rocketGeo = new THREE.ConeGeometry(0.55, 2.6, 10); rocketGeo.rotateX(Math.PI / 2);
+    const boom = (x, z) => {
+      for (let k = 0; k < 46; k++) { const a = Math.random() * 6.28, v = rnd(6, 34); FX.emit(x, 1.2, z, Math.cos(a) * v, rnd(4, 26), Math.sin(a) * v, rnd(0.35, 0.9), rnd(1, 2.2), Math.random() < 0.5 ? fire : fire2, 1, 0.9, 26); }
+      for (let k = 0; k < 14; k++) FX.emit(x + rnd(-2, 2), rnd(1, 3), z + rnd(-2, 2), rnd(-3, 3), rnd(3, 8), rnd(-3, 3), rnd(0.8, 1.5), 2.6, smoke, 0.5, 2.5);
+      ctx.beep(90, 0.35, 'sawtooth', 0.08);
+    };
+    const puff = (q, col) => { for (let e = 0; e < 30; e++) FX.emit(q.x + rnd(-2, 2), rnd(0.5, 3.5), q.z + rnd(-2, 2), rnd(-8, 8), rnd(2, 12), rnd(-8, 8), rnd(0.3, 0.8), 0.8, col, 1, 0.3); };
+    function blocked(v) { // true when the victim's shield or ghost form absorbs the hit
+      if (v.finished || v.ghostT > 0) return true;
+      if (v.shieldT > 0) { v.shieldT = 0; note(v, 'BLOCKED!'); puff(v, cyan); return true; }
+      return false;
+    }
+    function wreck(v, label) { if (blocked(v)) return; v.spinT = 1.2; v.speed *= 0.3; note(v, label); if (v.p) ctx.to(v.p.id, { e: 'hit' }); }
+    function giveItem(c) { // cars at the back get the stronger catch-up items
+      const ord = order(), f = ord.length > 1 ? ord.indexOf(c) / (ord.length - 1) : 0, lead = ord[0] === c;
+      const w = { rocket: lead ? 1 : 3, mine: 2 + 2 * (1 - f), shield: 2 + (1 - f), turbo: 2 + 2 * f, zap: lead ? 0 : 0.3 + 2.5 * f, swap: lead ? 0 : 0.2 + 2 * f };
+      let r = Math.random() * Object.values(w).reduce((a, b) => a + b, 0), k = 'turbo'; for (const [key, v] of Object.entries(w)) { r -= v; if (r <= 0) { k = key; break; } }
+      c.item = k; c.botItemT = rnd(1, 5); if (c.p) { ctx.to(c.p.id, { e: 'item', k, name: ITEMS[k][0], icon: ITEMS[k][1] }); ctx.beep(990, 0.08, 'triangle'); }
+    }
+    function useItem(c) {
+      if (phase !== 'race' || !c.item || c.finished || c.frozenT > 0 || c.spinT > 0) return;
+      let k = c.item; c.item = null; if (c.p) ctx.to(c.p.id, { e: 'item', k: null });
+      const ahead = cars.filter((o) => o !== c && !o.finished && o.total > c.total).sort((a, b) => a.total - b.total);
+      if (k === 'swap' && !ahead.length) k = 'turbo';
+      if (k === 'rocket') { const mesh = new THREE.Mesh(rocketGeo, new THREE.MeshBasicMaterial({ color: 0xff4b2b })); mesh.add(glow(0xffa21a, 6, 0.9)); scene.add(mesh); rockets.push({ owner: c, f: c.idx + 2, lat: c.lat, t: 0, mesh, x: c.x, z: c.z }); ctx.beep(520, 0.15, 'sawtooth', 0.05); }
+      else if (k === 'mine') { const mesh = new THREE.Mesh(new THREE.SphereGeometry(1.1, 12, 8), new THREE.MeshLambertMaterial({ color: 0x1b1b21 })), gl = glow(0xff2020, 5, 0.9), x = c.x - Math.sin(c.h) * 4.5, z = c.z - Math.cos(c.h) * 4.5; mesh.add(gl); mesh.position.set(x, 1, z); scene.add(mesh); mines.push({ owner: c, x, z, t: 0, mesh, gl }); }
+      else if (k === 'shield') c.shieldT = 9;
+      else if (k === 'turbo') c.boostT = Math.max(c.boostT, 2.2);
+      else if (k === 'zap') { for (const o of ahead) { if (blocked(o)) continue; o.zapT = 3; o.speed *= 0.55; note(o, 'ZAPPED!'); if (o.p) ctx.to(o.p.id, { e: 'hit' }); for (let q = 0; q < 26; q++) FX.emit(o.x + rnd(-1.5, 1.5), rnd(0.5, 9), o.z + rnd(-1.5, 1.5), rnd(-4, 4), rnd(-6, 2), rnd(-4, 4), rnd(0.25, 0.6), 0.9, spark, 1, 0.2); } ctx.beep(1400, 0.25, 'square', 0.05); }
+      else if (k === 'swap') { const o = ahead[0]; if (!blocked(o)) { for (const key of ['x', 'z', 'h', 'idx', 'total', 'lat', 'speed', 'lastTotal']) { const tmp = c[key]; c[key] = o[key]; o[key] = tmp; } for (const q of [c, o]) { note(q, 'SWAPPED!'); if (q.camPos) { q.camPos.set(q.x - Math.sin(q.h) * 12, 6, q.z - Math.cos(q.h) * 12); q.look.set(q.x, 1.5, q.z); } puff(q, cyan); } if (o.p) ctx.to(o.p.id, { e: 'hit' }); } }
+    }
+    function stepItems(dt) {
+      for (const b of boxes) { if (b.t > 0) { b.t -= dt; continue; } for (const c of cars) if (!c.item && !c.finished && (b.x - c.x) ** 2 + (b.z - c.z) ** 2 < 11) { b.t = 5; giveItem(c); for (let k = 0; k < 16; k++) FX.emit(b.x, 2, b.z, rnd(-10, 10), rnd(3, 14), rnd(-10, 10), rnd(0.3, 0.6), 0.7, spark, 1, 0.2, 30); break; } }
+      for (let i = rockets.length - 1; i >= 0; i--) { // rockets follow the road and drift towards the nearest car ahead
+        const r = rockets[i]; r.t += dt; r.f += (150 * dt) / 2.5;
+        let tgt = null, bd = 1e9; for (const o of cars) { if (o === r.owner || o.finished || o.ghostT > 0) continue; const d = (((o.idx - r.f) % T.N) + T.N) % T.N; if (d < 40 && d < bd) { bd = d; tgt = o; } }
+        if (tgt) r.lat += clamp(tgt.lat - r.lat, -26 * dt, 26 * dt);
+        const i0 = ((Math.floor(r.f) % T.N) + T.N) % T.N, i1 = (i0 + 1) % T.N, u = r.f - Math.floor(r.f);
+        r.x = T.px[i0] + (T.px[i1] - T.px[i0]) * u + T.tz[i0] * r.lat; r.z = T.pz[i0] + (T.pz[i1] - T.pz[i0]) * u - T.tx[i0] * r.lat;
+        r.mesh.position.set(r.x, 1.4, r.z); r.mesh.rotation.y = Math.atan2(T.tx[i0], T.tz[i0]);
+        FX.emit(r.x, 1.4, r.z, rnd(-1, 1), rnd(0, 2), rnd(-1, 1), 0.4, 1, Math.random() < 0.5 ? fire : smoke, 0.8, 1.5);
+        let done = r.t > 3.5; for (const o of cars) { if (o === r.owner || o.finished || o.ghostT > 0) continue; if ((o.x - r.x) ** 2 + (o.z - r.z) ** 2 < 20) { wreck(o, 'ROCKETED!'); done = true; break; } }
+        if (done) { boom(r.x, r.z); scene.remove(r.mesh); rockets.splice(i, 1); }
+      }
+      for (let i = mines.length - 1; i >= 0; i--) {
+        const m = mines[i]; m.t += dt; m.gl.material.opacity = 0.4 + 0.5 * Math.abs(Math.sin(m.t * 6));
+        let done = m.t > 45; if (m.t > 0.7) for (const o of cars) { if (o.finished || o.ghostT > 0 || (o === m.owner && m.t < 2)) continue; if ((o.x - m.x) ** 2 + (o.z - m.z) ** 2 < 14) { wreck(o, 'BOOM!'); boom(m.x, m.z); done = true; break; } }
+        if (done) { scene.remove(m.mesh); mines.splice(i, 1); }
+      }
+    }
     function botDrive(c) {
       const j = (c.idx + 9) % T.N, lat = c.botLat * T.hw * 0.55, txp = T.px[j] + T.tz[j] * lat, tzp = T.pz[j] - T.tx[j] * lat;
       let diff = Math.atan2(txp - c.x, tzp - c.z) - c.h; diff = Math.atan2(Math.sin(diff), Math.cos(diff));
       c.steer = clamp(-diff * 2.6, -1, 1); c.gas = Math.abs(diff) < 1.1; c.brake = Math.abs(diff) > 1.3 && c.speed > 25;
+      if (c.bot && !c.finished && c.item) { c.botItemT -= 1 / 60; if (c.botItemT <= 0) useItem(c); }
       if (c.bot && !c.finished) { c.botPw -= 1 / 60; if (c.botPw <= 0 && c.cd <= 0) { usePower(c); c.botPw = rnd(4, 12); } }
     }
     function stepCar(c, dt) {
       if (c.bot || c.finished) botDrive(c);
       const frozen = c.frozenT > 0, spin = c.spinT > 0, off = Math.abs(c.lat) > T.hw + 1.5;
       let top = c.type.top * (c.bot ? c.skill : 1) * (c.finished ? 0.6 : 1);
-      if (c.boostT > 0) top *= 1.5; if (c.ghostT > 0) top *= 1.12; if (off) top *= 0.5; if (frozen) top *= 0.3;
+      if (c.boostT > 0) top *= 1.5; if (c.ghostT > 0) top *= 1.12; if (off) top *= 0.5; if (frozen) top *= 0.3; if (c.zapT > 0) top *= 0.55;
       const gas = c.gas && !frozen && !spin, brake = c.brake;
       if (gas && c.speed < top) c.speed += c.type.acc * (c.boostT > 0 ? 2.4 : 1) * dt;
       else if (!gas) c.speed -= Math.sign(c.speed) * Math.min(Math.abs(c.speed), 13 * dt);
@@ -191,7 +259,7 @@ export function start(ctx) {
         c.speed *= Math.exp(-1.6 * dt); const th = Math.atan2(T.tx[c.idx], T.tz[c.idx]); let d = th - c.h; d = Math.atan2(Math.sin(d), Math.cos(d)); if (Math.abs(d) < 1.6) c.h += d * Math.min(1, 3 * dt);
       }
       for (const p of world.pads) if ((p.x - c.x) ** 2 + (p.z - c.z) ** 2 < 30) { if (c.boostT < 1.2) { c.boostT = 1.5; if (c.p) ctx.beep(700, 0.1, 'triangle'); for (let k = 0; k < 24; k++) FX.emit(c.x, 0.4, c.z, rnd(-14, 14), rnd(4, 18), rnd(-14, 14), rnd(0.3, 0.6), 0.6, spark, 1, 0.2, 40); } }
-      for (const k of ['boostT', 'ghostT', 'frozenT', 'spinT', 'noteT']) if (c[k] > 0) c[k] -= dt;
+      for (const k of ['boostT', 'ghostT', 'frozenT', 'spinT', 'noteT', 'shieldT', 'zapT']) if (c[k] > 0) c[k] -= dt;
       if (c.cd > 0) { c.cd -= dt; if (c.cd <= 0 && !c.ready) { c.ready = true; if (c.p) ctx.to(c.p.id, { e: 'pw', ready: true }); } }
       // rescue a stuck car
       if (!c.finished) { c.stuckT += dt; if (c.total > c.lastTotal + 2) { c.lastTotal = c.total; c.stuckT = 0; } if (c.stuckT > 4.5) { c.x = T.px[c.idx]; c.z = T.pz[c.idx]; c.h = Math.atan2(T.tx[c.idx], T.tz[c.idx]); c.speed = 0; c.stuckT = 0; c.lat = 0; note(c, 'RESET'); } }
@@ -213,7 +281,8 @@ export function start(ctx) {
     function visuals(dt) {
       for (const c of cars) {
         const m = c.mesh, u = m.userData;
-        m.position.set(c.x, c.type.key === 'warp' ? 0.35 + Math.sin(clock * 5 + c.x) * 0.08 : 0, c.z); m.rotation.y = c.h;
+        m.position.set(c.x, u.rings ? 0.35 + Math.sin(clock * 5 + c.x) * 0.08 : 0, c.z); m.rotation.y = c.h;
+        c.shield.visible = c.shieldT > 0; if (c.shield.visible) { c.shield.position.set(c.x, 1.8, c.z); c.shield.material.opacity = c.shieldT < 2 ? 0.14 + 0.14 * Math.abs(Math.sin(clock * 10)) : 0.28; }
         u.chassis.rotation.z = c.steer * clamp(c.speed / 40, 0, 1) * 0.09;
         for (const w of u.wheels) w.rotation.x += c.speed * dt / 0.6;
         for (const f of u.fronts) f.rotation.y = -c.steer * 0.45;
@@ -243,6 +312,7 @@ export function start(ctx) {
           const fov = 68 + clamp((c.speed - 50) / 40, 0, 1) * 16; if (Math.abs(fov - c.cam.fov) > 0.3) { c.cam.fov += (fov - c.cam.fov) * 0.1; c.cam.updateProjectionMatrix(); }
         }
       }
+      for (const b of boxes) { b.mesh.visible = b.t <= 0; b.mesh.rotation.y += dt * 1.6; b.mesh.rotation.x = 0.35; b.mesh.position.y = 2.3 + Math.sin(clock * 3 + b.ph) * 0.35; }
       world.update(dt, clock);
     }
     function hud() {
@@ -255,6 +325,7 @@ export function start(ctx) {
         set('rdy', c.cd <= 0, (v) => h.pw.classList.toggle('ready', v));
         set('spd', Math.round(Math.abs(c.speed) * 3.2 / 5) * 5, (v) => { h.spd.textContent = v; });
         set('bst', c.boostT > 0, (v) => h.el.classList.toggle('boost', v));
+        set('item', c.item || '', (v) => { h.item.textContent = v ? ITEMS[v][1] + ' ' + ITEMS[v][0] : ''; h.item.classList.toggle('on', !!v); });
         h.bar.style.width = (c.cd <= 0 ? 100 : (1 - c.cd / c.type.cd) * 100) + '%';
         set('note', c.finished ? ORD[c.place - 1].toUpperCase() + ' PLACE' : c.noteT > 0 ? h.note.textContent : '', (v) => { h.note.textContent = v; });
       }
@@ -291,7 +362,7 @@ export function start(ctx) {
       if (phase === 'race') {
         raceTime += dt;
         for (const c of cars) stepCar(c, dt);
-        collide();
+        collide(); stepItems(dt);
         if (endT > 0) { endT -= dt; if (endT <= 0 || humans.every((c) => c.finished)) finish(); }
       }
       visuals(dt); hud();
@@ -301,8 +372,8 @@ export function start(ctx) {
       humans.forEach((c, i) => { const r = cells[i]; FX.mat.uniforms.scale.value = r.h * pr * 0.74; renderer.setViewport(r.x, H - r.y - r.h, r.w, r.h); renderer.setScissor(r.x, H - r.y - r.h, r.w, r.h); renderer.render(scene, c.cam); });
     }
     raf = requestAnimationFrame(frame);
-    const sim = (steps, dt = 1 / 60) => { for (let i = 0; i < steps && phase === 'race'; i++) { raceTime += dt; for (const c of cars) stepCar(c, dt); collide(); } };
-    game = { cars, T, humans, usePower, renderer, layout, sim, get phase() { return phase; }, setPhase: (p) => { phase = p; } };
+    const sim = (steps, dt = 1 / 60) => { for (let i = 0; i < steps && phase === 'race'; i++) { raceTime += dt; for (const c of cars) stepCar(c, dt); collide(); stepItems(dt); } };
+    game = { cars, T, humans, usePower, useItem, boxes, rockets, mines, renderer, layout, sim, get phase() { return phase; }, setPhase: (p) => { phase = p; } };
     window.__race = game;
   }
 
@@ -317,11 +388,12 @@ export function start(ctx) {
       const c = game?.cars.find((x) => x.p === p); if (!c) return;
       if (d.a === 'in') { c.steer = clamp(+d.s || 0, -1, 1); c.gas = !!d.g; c.brake = !!d.b; }
       if (d.a === 'pw') game.usePower(c);
+      if (d.a === 'it') game.useItem(c);
     },
     onHostKey() { if (phase === 'pick') beginRace(); else if (phase === 'done') ctx.end(pointRows); },
     onLeave(p) { const c = game?.cars.find((x) => x.p === p); if (c) { c.gas = false; c.steer = 0; } },
     stop() {
-      cancelAnimationFrame(raf); if (game) { removeEventListener('resize', game.layout); game.renderer.dispose(); game.renderer.forceContextLoss?.(); }
+      stopped = true; cancelAnimationFrame(raf); if (game) { removeEventListener('resize', game.layout); game.renderer.dispose(); game.renderer.forceContextLoss?.(); }
       window.__race = null;
     },
   };

@@ -1,0 +1,7 @@
+3D models and sounds in this folder are by Kenney (www.kenney.nl), released under Creative Commons Zero (CC0):
+- Car Kit: cars/*.glb, props/cone.glb
+- Nature Kit: props/tree_*, cactus_*, rock_*, stone_*, plant_*, tent_*, canoe, statue_*
+- Starter Kit Racing: props/decoration-tents.glb, sfx/impact.ogg, sfx/skid.ogg
+- Mini Characters: chars/*.glb
+- Starter Kit 3D Platformer: blocks/brick.glb, sfx/break.ogg, coin.ogg, jump.ogg, land.ogg, fall.ogg
+CC0 means they can be used freely, including commercially, with no attribution required. Credit is given here as a thank-you.

@@ -10,7 +10,8 @@ const HEAD = 13, TRAIL_W = 9, HIT = 8, START_R = 9, SMALL_R = 6;
 
 export function start(ctx) {
   const n = ctx.players.length;
-  const W = n <= 3 ? 1200 : n <= 5 ? 1440 : 1600, H = W * 9 / 16, C = W / G, R = Math.round(H / G), TOTAL = C * R;
+  const W = 80 * Math.round(10 * Math.sqrt(Math.max(1, n))), H = W * 9 / 16, // map area grows in step with the player count: 2 players 1120 wide, 5 players 1760, 8 players 2240
+    C = W / G, R = Math.round(H / G), TOTAL = C * R;
   const own = new Int8Array(TOTAL).fill(-1);
   const cellOf = (x, y) => Math.max(0, Math.min(R - 1, Math.floor(y / G))) * C + Math.max(0, Math.min(C - 1, Math.floor(x / G)));
   const P = ctx.players.map((p, i) => ({ p, i, color: p.color, name: p.name, x: 0, y: 0, ang: 0, target: 0, moving: false, freeze: 0, trail: [], lastIn: [0, 0],
@@ -218,8 +219,8 @@ export function start(ctx) {
       const ex = Math.cos(pl.ang), ey = Math.sin(pl.ang), blink = (clock + pl.blink) % 3.2 < 0.12;
       for (const sd of [-1, 1]) { const cx = pl.x + ex * 4.5 - ey * sd * 5, cy = pl.y + ey * 4.5 + ex * sd * 5; g.fillStyle = '#fff'; g.beginPath(); g.ellipse(cx, cy, 4.2, blink ? 0.8 : 4.2, pl.ang, 0, 7); g.fill(); if (!blink) { g.fillStyle = '#14110f'; g.beginPath(); g.arc(cx + ex * 1.6, cy + ey * 1.6, 2.1, 0, 7); g.fill(); } }
       if (crown) { g.fillStyle = '#ffc62b'; g.strokeStyle = '#14110f'; g.lineWidth = 2; g.beginPath(); const cx = pl.x, cy = pl.y - r - 3; g.moveTo(cx - 10, cy); g.lineTo(cx - 12, cy - 11); g.lineTo(cx - 5, cy - 6); g.lineTo(cx, cy - 13); g.lineTo(cx + 5, cy - 6); g.lineTo(cx + 12, cy - 11); g.lineTo(cx + 10, cy); g.closePath(); g.fill(); g.stroke(); }
-      g.font = '900 15px "DM Sans", system-ui, sans-serif'; const tw = g.measureText(pl.name).width + 16, up = pl.y - r - (crown ? 30 : 16), ly = up < 14 ? pl.y + r + 16 : up, lx = Math.max(tw / 2 + 2, Math.min(W - tw / 2 - 2, pl.x));
-      g.fillStyle = 'rgba(20,17,15,.8)'; g.beginPath(); g.roundRect(lx - tw / 2, ly - 11, tw, 22, 11); g.fill(); g.fillStyle = '#fff'; g.fillText(pl.name, lx, ly + 1);
+      const fs = Math.max(15, 11 / scale); g.font = `900 ${fs}px "DM Sans", system-ui, sans-serif`; const tw = g.measureText(pl.name).width + fs, up = pl.y - r - (crown ? 30 : 16), ly = up < 14 ? pl.y + r + 16 : up, lx = Math.max(tw / 2 + 2, Math.min(W - tw / 2 - 2, pl.x));
+      g.fillStyle = 'rgba(20,17,15,.8)'; g.beginPath(); g.roundRect(lx - tw / 2, ly - fs * 0.73, tw, fs * 1.46, fs * 0.73); g.fill(); g.fillStyle = '#fff'; g.fillText(pl.name, lx, ly + 1);
     }
     for (const t of texts) { t.t += dt; const a = 1 - t.t / 1.2; if (a <= 0) continue; g.globalAlpha = a; g.font = '400 30px "Bowlby One", "Arial Black", sans-serif'; g.lineWidth = 6; g.strokeStyle = '#14110f'; g.strokeText(t.text, t.x, t.y - t.t * 50); g.fillStyle = '#fff'; g.fillText(t.text, t.x, t.y - t.t * 50); }
     g.globalAlpha = 1; texts = texts.filter((t) => t.t < 1.2);

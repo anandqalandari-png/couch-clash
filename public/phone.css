@@ -107,3 +107,33 @@ body.race #quit{right:auto;left:50%;transform:translateX(-50%)}
 body.race .rc .mid{padding-top:30px}
 .skc .tb.on i{background:#fff}
 body.race #app,body.turf #app{overflow:hidden}
+
+/* race: item button */
+.rc .it{flex:1;border-radius:22px;background:#2a2622;border:3px dashed rgba(255,255,255,.25);font-family:var(--display);font-size:clamp(13px,4.6vh,24px);color:#8a8178;display:grid;place-items:center;text-align:center;padding:6px;touch-action:none}
+.rc .it small{display:block;font-family:var(--body);font-weight:900;font-size:10px;letter-spacing:.1em;opacity:.8}
+.rc .it.ready{background:var(--teal);color:var(--ink);border:3px solid #fff;animation:pulse .7s infinite alternate}
+
+/* lobby game buttons */
+.btn.g-race{background:var(--red);color:#fff}.btn.g-sketch{background:var(--yellow)}.btn.g-turf{background:var(--teal)}
+.btn.g-football{background:#2b7bff;color:#fff}.btn.g-punch{background:#b455ff;color:#fff}.btn.g-blast{background:var(--ink);color:var(--yellow)}
+/* joystick + button pad */
+body.padm #app{overflow:hidden;padding:0}
+.pad2{position:absolute;inset:0;display:flex;background:var(--me);color:#fff;transition:background .3s;padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));gap:10px}
+.pad2 .joy{flex:1.5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;touch-action:none;min-width:0;min-height:0;text-align:center}
+.pad2 .ttl{font-family:var(--display);font-size:26px;text-shadow:0 3px 0 rgba(0,0,0,.35);min-height:1.1em}
+.pad2 .sub{font-weight:900;font-size:14px;letter-spacing:.04em;background:rgba(20,17,15,.45);padding:6px 14px;border-radius:999px;min-height:1.2em}
+.pad2 .sub:empty{visibility:hidden}
+.pad2 .stick{width:170px;height:170px;border-radius:50%;border:5px solid rgba(255,255,255,.9);background:rgba(20,17,15,.28);position:relative;flex:none}
+.pad2 .stick i{position:absolute;left:50%;top:50%;width:76px;height:76px;margin:-38px;border-radius:50%;background:#fff;box-shadow:0 6px 0 rgba(0,0,0,.3)}
+.pad2 .act{flex:1;border-radius:26px;background:var(--yellow);color:var(--ink);border:4px solid var(--ink);font-family:var(--display);font-size:clamp(26px,9vw,46px);box-shadow:0 8px 0 var(--ink);touch-action:none;min-height:0}
+.pad2 .act.on{transform:translateY(6px);box-shadow:0 2px 0 var(--ink)}
+.pad2 .act.cd{background:#8a8178;color:#3a342f}
+@media (orientation:portrait){ .pad2{flex-direction:column} .pad2 .joy{flex:1.6} .pad2 .act{flex:1} }
+/* punchline */
+.plw{display:flex;flex-direction:column;flex:1;min-height:0}
+.plw .top{display:flex;justify-content:space-between;align-items:baseline;padding-right:92px}
+.plw .tm{font-family:var(--display);font-weight:400;font-size:26px}
+.plw h2{font-size:26px;line-height:1.1;margin:6px 0 16px}
+.plw textarea{font:inherit;font-weight:700;font-size:20px;width:100%;padding:14px;border:3px solid var(--ink);border-radius:16px;background:#fff;color:var(--ink);outline:none;resize:none;-webkit-user-select:text;user-select:text}
+.plw .cnt{text-align:right;font-weight:900;font-size:12px;opacity:.5;margin-top:4px}
+.btn.vote{font-family:var(--body);font-weight:900;font-size:19px;text-align:left;line-height:1.25}

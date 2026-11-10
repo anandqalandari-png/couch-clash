@@ -1,5 +1,27 @@
 // Everything you see in Turbo Clash: terrain, road, scenery, sky, cars and particles. All built in code.
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// Free CC0 models by Kenney (see public/assets/CREDITS.txt). If a model fails to load, the game falls back to shapes built in code.
+const CAR_MODEL = { bolt: 'race-future', phantom: 'sedan-sports', titan: 'truck', frost: 'hatchback-sports', warp: 'race' };
+export const BOT_MODELS = ['taxi', 'police', 'van'];
+const PROPS = {
+  all: ['cone', 'decoration-tents'],
+  beach: ['tree_palmDetailedTall', 'tree_palmBend', 'tree_palmShort', 'plant_bushDetailed', 'rock_largeA', 'rock_tallH', 'tent_detailedOpen', 'canoe'],
+  desert: ['cactus_tall', 'cactus_short', 'rock_tallA', 'rock_tallH', 'stone_tallB', 'statue_obelisk'],
+  snow: ['tree_pineTallA_detailed', 'tree_pineTallB_detailed', 'tree_pineRoundA', 'tree_pineDefaultA', 'stone_tallB', 'rock_largeA'],
+  neon: [],
+};
+const modelCache = new Map();
+export async function loadAssets(theme) {
+  const loader = new GLTFLoader(), out = { cars: {}, props: {} };
+  const get = (url) => { if (!modelCache.has(url)) modelCache.set(url, loader.loadAsync(url).then((g) => g.scene).catch(() => null)); return modelCache.get(url); };
+  await Promise.all([
+    ...[...Object.values(CAR_MODEL), ...BOT_MODELS].map(async (n) => { out.cars[n] = await get(`/assets/cars/${n}.glb`); }),
+    ...[...PROPS.all, ...(PROPS[theme] || [])].map(async (n) => { out.props[n] = await get(`/assets/props/${n}.glb`); }),
+  ]);
+  return out;
+}
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const rnd = (a, b) => a + Math.random() * (b - a);
@@ -41,7 +63,7 @@ const hash = (x, y) => { const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
 function vnoise(x, y) { const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf); return lerp(lerp(hash(xi, yi), hash(xi + 1, yi), u), lerp(hash(xi, yi + 1), hash(xi + 1, yi + 1), u), v); }
 const fbm = (x, y) => (vnoise(x, y) * 0.5 + vnoise(x * 2.1, y * 2.1) * 0.25 + vnoise(x * 4.3, y * 4.3) * 0.125) / 0.875;
 const glowTex = canvasTex(128, 128, (c) => { const g = c.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.25, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(255,255,255,0)'); c.fillStyle = g; c.fillRect(0, 0, 128, 128); });
-function glow(color, size, opacity = 1) { const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity, fog: false })); s.scale.setScalar(size); return s; }
+export function glow(color, size, opacity = 1) { const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity, fog: false })); s.scale.setScalar(size); return s; }
 
 // ---------- track ----------
 export function buildTrack(def) {
@@ -124,7 +146,7 @@ export class Particles {
 }
 
 // ---------- world ----------
-export function buildWorld(scene, T, renderer) {
+export function buildWorld(scene, T, renderer, assets) {
   const theme = T.def.theme, th = THEMES[theme], neon = theme === 'neon', hw = T.hw;
   const lam = (o) => new THREE.MeshLambertMaterial(o), vcol = lam({ vertexColors: true });
   const C = (h) => new THREE.Color(h);
@@ -228,16 +250,35 @@ export function buildWorld(scene, T, renderer) {
   const scatter = (n, minD, rMin, rMax, mk, ok) => { const out = []; let tries = 0; while (out.length < n && tries++ < n * 30) { const a = Math.random() * 6.28, r = Math.sqrt(rnd(rMin * rMin, rMax * rMax)), x = Math.cos(a) * r, z = Math.sin(a) * r; if (T.dist(x, z) < minD) continue; const o = put({ x, z, ry: Math.random() * 6.28, ...mk() }); if (ok && !ok(o)) continue; out.push(o); } return out; };
   const along = (n, minD, maxD, mk, ok) => { const out = []; let tries = 0; while (out.length < n && tries++ < n * 30) { const i = Math.floor(Math.random() * T.N), off = rnd(minD, maxD) * (Math.random() < 0.5 ? -1 : 1), x = T.px[i] + T.tz[i] * off, z = T.pz[i] - T.tx[i] * off; if (T.dist(x, z) < minD - 1) continue; const o = put({ x, z, ry: Math.random() * 6.28, ...mk() }); if (ok && !ok(o)) continue; out.push(o); } return out; };
   const add = (geo, list, mat = vcol, shadow = true) => scene.add(instanced(geo, mat, list, shadow));
+  // place downloaded models: the list is shared out between the named models; returns false if any is missing so the caller can fall back
+  const A = (assets && assets.props) || {};
+  const useProps = (names, list, k, opts = {}) => {
+    if (!names.every((nm) => A[nm])) return false;
+    names.forEach((nm, ni) => {
+      const src = A[nm], mine = list.filter((_, i) => i % names.length === ni).map((o) => ({ ...o, s: o.s * k })); if (!mine.length) return;
+      src.updateMatrixWorld(true);
+      src.traverse((o) => {
+        if (!o.isMesh) return;
+        const geo = o.geometry.clone().applyMatrix4(o.matrixWorld), mat = new THREE.MeshLambertMaterial({ color: o.material.color.clone(), map: o.material.map || null });
+        if (opts.recolor && opts.recolor[o.material.name] !== undefined) mat.color.set(opts.recolor[o.material.name]);
+        if (opts.tint) mat.color.lerp(new THREE.Color(opts.tint[0]), opts.tint[1]);
+        scene.add(instanced(geo, mat, mine, opts.shadow !== false));
+      });
+    });
+    return true;
+  };
   const rock = merge([{ g: new THREE.DodecahedronGeometry(1, 0), c: theme === 'snow' ? 0xcbd9ea : theme === 'desert' ? 0x9c5a3c : neon ? 0x2a2050 : 0x8d8578, m: M(0, 0.45, 0, 1, 0.75, 1.1) }, { g: new THREE.DodecahedronGeometry(0.6, 0), c: theme === 'snow' ? 0xe6eef8 : theme === 'desert' ? 0xb06a48 : neon ? 0x3a2c6a : 0xa39b8c, m: M(0.8, 0.3, 0.4) }]);
 
   if (theme === 'beach') {
     const dry = (o) => o.y > 0.1;
     const leaves = []; for (let k = 0; k < 7; k++) leaves.push({ g: cone(0.95, 7, 4), c: k % 2 ? 0x2a9a45 : 0x45c260, m: new THREE.Matrix4().multiplyMatrices(M(0, 9.6, 0, 1, 1, 1, 0, k * 0.9, 0), M(2.6, -1.0, 0, 1, 1, 0.34, 0, 0, -1.95)) });
     const palm = merge([{ g: cyl(0.3, 0.42, 3.4), c: 0x8a5a2b, m: M(0, 1.7, 0, 1, 1, 1, 0, 0, 0.05) }, { g: cyl(0.27, 0.32, 3.4), c: 0x9a6a36, m: M(-0.2, 5.0, 0, 1, 1, 1, 0, 0, 0.1) }, { g: cyl(0.23, 0.28, 3.2), c: 0x8a5a2b, m: M(-0.45, 8.1, 0, 1, 1, 1, 0, 0, 0.04) }, { g: new THREE.SphereGeometry(0.55, 6, 5), c: 0x5a3a1b, m: M(-0.5, 9.5, 0) }, ...leaves.map((l) => ({ ...l, m: new THREE.Matrix4().multiplyMatrices(M(-0.5, 0, 0), l.m) }))]);
-    add(palm, [...scatter(80, near, 0, 440, () => ({ s: rnd(0.9, 1.5) }), dry), ...along(150, near, near + 36, () => ({ s: rnd(0.9, 1.7) }), dry)]);
-    add(rock, [...scatter(50, near - 4, 0, 470, () => ({ s: rnd(1, 3.5) })), ...along(30, near - 5, near + 20, () => ({ s: rnd(0.8, 2) }))]);
+    { const L = [...scatter(80, near, 0, 440, () => ({ s: rnd(0.9, 1.5) }), dry), ...along(150, near, near + 36, () => ({ s: rnd(0.9, 1.7) }), dry)]; if (!useProps(['tree_palmDetailedTall', 'tree_palmBend', 'tree_palmShort'], L, 9, { recolor: { leafsGreen: 0x3fae4f, woodBark: 0x9a6a36 } })) add(palm, L); }
+    { const L = [...scatter(50, near - 4, 0, 470, () => ({ s: rnd(1, 3.5) })), ...along(30, near - 5, near + 20, () => ({ s: rnd(0.8, 2) }))]; if (!useProps(['rock_largeA', 'rock_tallH'], L, 2.6)) add(rock, L); }
+    useProps(['tent_detailedOpen'], along(12, near + 1, near + 12, () => ({ s: rnd(0.9, 1.2) }), dry), 9);
+    useProps(['canoe'], scatter(10, 70, 405, 432, () => ({ s: 1 })), 7);
     const bush = merge([{ g: new THREE.IcosahedronGeometry(1, 1), c: 0x4faa5c, m: M(0, 0.6, 0, 1.3, 0.8, 1.3) }, { g: new THREE.IcosahedronGeometry(0.7, 1), c: 0x74cf86, m: M(0.9, 0.5, 0.3) }, { g: new THREE.IcosahedronGeometry(0.6, 1), c: 0x3f9550, m: M(-0.8, 0.4, -0.4) }]);
-    add(bush, [...scatter(90, near - 5, 0, 430, () => ({ s: rnd(0.8, 2.2) }), dry), ...along(110, near - 5, near + 28, () => ({ s: rnd(0.8, 1.9) }), dry)]);
+    { const L = [...scatter(90, near - 5, 0, 430, () => ({ s: rnd(0.8, 2.2) }), dry), ...along(110, near - 5, near + 28, () => ({ s: rnd(0.8, 1.9) }), dry)]; if (!useProps(['plant_bushDetailed'], L, 5.5)) add(bush, L); }
     const umb = merge([{ g: cyl(0.07, 0.07, 3, 5), c: 0xffffff, m: M(0, 1.5, 0) }, { g: cone(2.2, 0.9, 8), c: 0xff4b2b, m: M(0, 3.2, 0) }, { g: cone(2.25, 0.3, 8), c: 0xffffff, m: M(0, 2.8, 0) }, { g: new THREE.BoxGeometry(0.9, 0.12, 2.2), c: 0x2b7bff, m: M(1.6, 0.3, 0) }]);
     add(umb, along(26, near - 2, near + 16, () => ({ s: rnd(0.9, 1.2) }), dry));
     const isle = merge([{ g: cone(60, 50, 9), c: 0x5f9d5e, m: M(0, 18, 0) }, { g: cone(34, 30, 7), c: 0x77b46f, m: M(34, 8, 12) }, { g: cyl(74, 82, 6, 12), c: 0xf0d79b, m: M(0, -2, 0) }]);
@@ -249,15 +290,17 @@ export function buildWorld(scene, T, renderer) {
     scene.add(instanced(mesa, vcol, scatter(26, 0, 750, 1500, () => ({ s: rnd(60, 130), sy: rnd(0.8, 1.7) })), false));
     const cactus = merge([{ g: cyl(0.5, 0.58, 6, 8), c: 0x3f8f4f, m: M(0, 3, 0) }, { g: new THREE.SphereGeometry(0.5, 8, 5), c: 0x3f8f4f, m: M(0, 6, 0) }, { g: cyl(0.32, 0.32, 2.2, 6), c: 0x4aa35c, m: M(1.2, 3.7, 0) }, { g: cyl(0.3, 0.3, 1.2, 6), c: 0x4aa35c, m: M(0.7, 2.7, 0, 1, 1, 1, 0, 0, 1.57) },
       { g: cyl(0.3, 0.3, 1.8, 6), c: 0x4aa35c, m: M(-1.1, 3.0, 0) }, { g: cyl(0.28, 0.28, 1.1, 6), c: 0x4aa35c, m: M(-0.65, 2.2, 0, 1, 1, 1, 0, 0, 1.57) }, { g: new THREE.SphereGeometry(0.2, 5, 4), c: 0xff7ac8, m: M(0, 6.5, 0) }]);
-    add(cactus, [...scatter(70, near - 3, 0, 520, () => ({ s: rnd(0.8, 1.8) })), ...along(130, near - 4, near + 32, () => ({ s: rnd(0.8, 1.9) }))]);
-    add(rock, [...scatter(110, near - 5, 0, 600, () => ({ s: rnd(0.8, 4.5) })), ...along(70, near - 6, near + 24, () => ({ s: rnd(0.7, 2.4) }))]);
+    { const L = [...scatter(70, near - 3, 0, 520, () => ({ s: rnd(0.8, 1.8) })), ...along(130, near - 4, near + 32, () => ({ s: rnd(0.8, 1.9) }))]; if (!useProps(['cactus_tall', 'cactus_short'], L, 9)) add(cactus, L); }
+    const sandstone = { grass: 0xe0a066, dirt: 0xb5653a, stone: 0xc98a5a, stoneDark: 0x9c5a3c, _defaultMat: 0xb5653a };
+    { const L = [...scatter(110, near - 5, 0, 600, () => ({ s: rnd(0.8, 4.5) })), ...along(70, near - 6, near + 24, () => ({ s: rnd(0.7, 2.4) }))]; if (!useProps(['rock_tallA', 'rock_tallH', 'stone_tallB'], L, 2.6, { recolor: sandstone })) add(rock, L); }
+    useProps(['statue_obelisk'], along(9, near + 4, near + 22, () => ({ s: rnd(0.9, 1.4) })), 16, { recolor: sandstone });
     const shrub = merge([{ g: new THREE.IcosahedronGeometry(1, 0), c: 0x9aa85a, m: M(0, 0.4, 0, 1.2, 0.6, 1.2) }, { g: new THREE.IcosahedronGeometry(0.6, 0), c: 0xb7c070, m: M(0.8, 0.3, 0.2) }]);
     add(shrub, along(140, near - 6, near + 40, () => ({ s: rnd(0.6, 1.6) })));
   }
   if (theme === 'snow') {
     const pine = merge([{ g: cyl(0.4, 0.5, 2.2, 6), c: 0x5a3a22, m: M(0, 1.1, 0) }, { g: cone(3.1, 4.2, 8), c: 0x1b5f41, m: M(0, 3.9, 0) }, { g: cone(3.15, 0.9, 8), c: 0xf4f9ff, m: M(0, 2.5, 0, 1, -1, 1) }, { g: cone(2.4, 3.8, 8), c: 0x237550, m: M(0, 6.1, 0) }, { g: cone(2.45, 0.7, 8), c: 0xf4f9ff, m: M(0, 4.8, 0, 1, -1, 1) }, { g: cone(1.6, 3.2, 8), c: 0x2c8a5e, m: M(0, 8.3, 0) }, { g: cone(1.0, 1.6, 8), c: 0xffffff, m: M(0, 9.3, 0) }]);
-    add(pine, [...scatter(170, near, 0, 620, () => ({ s: rnd(0.9, 2.1) })), ...along(230, near - 2, near + 44, () => ({ s: rnd(0.9, 2.2) }))]);
-    add(rock, [...scatter(70, near - 5, 0, 560, () => ({ s: rnd(1, 4.5) })), ...along(50, near - 6, near + 22, () => ({ s: rnd(0.8, 2.2) }))]);
+    { const L = [...scatter(170, near, 0, 620, () => ({ s: rnd(0.9, 2.1) })), ...along(230, near - 2, near + 44, () => ({ s: rnd(0.9, 2.2) }))]; if (!useProps(['tree_pineTallA_detailed', 'tree_pineTallB_detailed', 'tree_pineRoundA', 'tree_pineDefaultA'], L, 6.5, { tint: [0xffffff, 0.2] })) add(pine, L); }
+    { const L = [...scatter(70, near - 5, 0, 560, () => ({ s: rnd(1, 4.5) })), ...along(50, near - 6, near + 22, () => ({ s: rnd(0.8, 2.2) }))]; if (!useProps(['stone_tallB', 'rock_largeA'], L, 2.6, { recolor: { grass: 0xffffff, dirt: 0x9fb4cf, stone: 0xb9c8dc, _defaultMat: 0x9fb4cf } })) add(rock, L); }
     const peak = merge([{ g: cone(1, 1.5, 7), c: 0x7f97b8, m: M(0, 0.75, 0) }, { g: cone(0.46, 0.69, 7), c: 0xffffff, m: M(0, 1.16, 0) }, { g: cone(0.6, 0.9, 6), c: 0x8ea6c4, m: M(0.7, 0.45, 0.2) }, { g: cone(0.24, 0.36, 6), c: 0xffffff, m: M(0.7, 0.72, 0.2) }]);
     scene.add(instanced(peak, vcol, scatter(30, 0, 800, 1600, () => ({ s: rnd(130, 260), sy: rnd(0.8, 1.5) })).map((o) => ({ ...o, y: 0 })), false));
     const snowman = merge([{ g: new THREE.SphereGeometry(0.9, 10, 8), c: 0xffffff, m: M(0, 0.8, 0) }, { g: new THREE.SphereGeometry(0.65, 10, 8), c: 0xffffff, m: M(0, 2.0, 0) }, { g: new THREE.SphereGeometry(0.45, 10, 8), c: 0xffffff, m: M(0, 2.95, 0) }, { g: cone(0.1, 0.5, 5), c: 0xff9a2b, m: M(0, 2.95, 0.55, 1, 1, 1, 1.57) }, { g: cyl(0.35, 0.35, 0.4, 8), c: 0x14110f, m: M(0, 3.5, 0) }]);
@@ -265,6 +308,9 @@ export function buildWorld(scene, T, renderer) {
     const crystal = merge([{ g: new THREE.OctahedronGeometry(1, 0), c: 0x9fe8ff, m: M(0, 1.6, 0, 0.7, 1.8, 0.7) }, { g: new THREE.OctahedronGeometry(0.6, 0), c: 0xc8f4ff, m: M(0.8, 0.9, 0.3, 0.6, 1.4, 0.6, 0, 0, 0.3) }]);
     add(crystal, along(60, near - 6, near + 30, () => ({ s: rnd(0.8, 2.4) })), new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.85, emissive: 0x2f6f9f }));
   }
+  // every track: cones in the run-off and a paddock of tents beside the start line
+  { const cl = []; for (let i = 0; i < T.N; i += 7) { const s = Math.floor(i / 7) % 2 ? 1 : -1, o = s * (hw + 4.6); cl.push({ x: T.px[i] + T.tz[i] * o, z: T.pz[i] - T.tx[i] * o, y: 0.05, s: 1, ry: 0 }); } useProps(['cone'], cl, 2.4, { shadow: false }); }
+  { const tl = []; for (const s of [-1, 1]) for (const k of [4, 14]) { const i = (T.N - k) % T.N, o = s * (T.wall + 17), x = T.px[i] + T.tz[i] * o, z = T.pz[i] - T.tx[i] * o; if (T.dist(x, z) > T.wall + 13) tl.push({ x, z, y: T.height(x, z) + 0.1, s: 1, ry: Math.atan2(T.tx[i], T.tz[i]) }); } useProps(['decoration-tents'], tl, 2.1); }
   let lamps = null;
   if (neon) {
     const win = canvasTex(64, 128, (c, w, h) => { c.fillStyle = '#0d0a1c'; c.fillRect(0, 0, w, h); const cols = ['#00f0ff', '#ff2bd6', '#ffd23a', '#7a5cff']; for (let y = 4; y < h; y += 10) for (let x = 4; x < w; x += 10) if (Math.random() < 0.45) { c.fillStyle = cols[Math.floor(Math.random() * 4)]; c.globalAlpha = rnd(0.5, 1); c.fillRect(x, y, 6, 6); } });
@@ -316,7 +362,7 @@ function profile(bottomY, rear, front, top, width, bevel = 0.09) {
   const g = new THREE.ExtrudeGeometry(sh, { depth: width - bevel * 2, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel * 0.7, bevelSegments: 3, curveSegments: 10 });
   g.translate(0, 0, -(width - bevel * 2) / 2); g.rotateY(-Math.PI / 2); return g;
 }
-export function buildCar(type, color) {
+function buildCarProc(type, color) {
   const g = new THREE.Group(), chassis = new THREE.Group(); g.add(chassis);
   const paint = new THREE.MeshStandardMaterial({ color, metalness: 0.55, roughness: 0.26, envMapIntensity: 1.25 });
   const dark = new THREE.MeshStandardMaterial({ color: 0x17171c, metalness: 0.3, roughness: 0.6 });
@@ -391,6 +437,39 @@ export function buildCar(type, color) {
   iceBlock.scale.set(2.3, type === 'titan' ? 2.6 : 1.8, 3.6); iceBlock.position.y = type === 'titan' ? 1.9 : 1.2; iceBlock.visible = false; g.add(iceBlock);
   g.scale.setScalar(1.15);
   Object.assign(g.userData, { chassis, wheels, fronts, mats, flame, flameGlow: fg, iceBlock, tagY, rearZ: flameZ, wheelY: type === 'titan' ? 0.3 : 0.15 });
+  return g;
+}
+// A car from the downloaded Kenney models, rigged so wheels spin and steer. Falls back to the code-built car if the model is missing.
+export function buildCar(type, color, assets, botModel) {
+  const src = assets && assets.cars && assets.cars[botModel || CAR_MODEL[type]];
+  if (!src) return buildCarProc(type, color);
+  const g = new THREE.Group(), rig = new THREE.Group(), chassis = new THREE.Group(); g.add(rig); rig.add(chassis);
+  rig.scale.setScalar(type === 'titan' && !botModel ? 2.2 : 1.85);
+  const model = src.clone(true); model.updateMatrixWorld(true);
+  const matMap = new Map(), mats = [];
+  model.traverse((o) => { if (!o.isMesh) return; let m = matMap.get(o.material); if (!m) { m = o.material.clone(); m.roughness = 0.42; m.metalness = 0.12; m.envMapIntensity = 1.1; matMap.set(o.material, m); mats.push(m); } o.material = m; o.castShadow = true; });
+  const wheels = [], fronts = [], wheelNodes = [];
+  model.traverse((o) => { if (o !== model && /^wheel/i.test(o.name)) wheelNodes.push(o); });
+  for (const w of wheelNodes) {
+    const pos = new THREE.Vector3().setFromMatrixPosition(w.matrixWorld), q = new THREE.Quaternion().setFromRotationMatrix(w.matrixWorld);
+    const pivot = new THREE.Group(), spin = new THREE.Group(); pivot.position.copy(pos); pivot.add(spin);
+    w.removeFromParent(); w.position.set(0, 0, 0); w.quaternion.copy(q); spin.add(w);
+    rig.add(pivot); wheels.push(spin); if (/front/i.test(w.name)) fronts.push(pivot);
+  }
+  chassis.add(model); g.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(rig), H = box.max.y, Wd = box.max.x - box.min.x, L = box.max.z - box.min.z;
+  // contact shadow, a ring in the player's colour so cars are easy to tell apart, lights, and the shared effects
+  const blob = new THREE.Mesh(new THREE.PlaneGeometry(Wd * 1.9, L * 1.45), new THREE.MeshBasicMaterial({ map: glowTex, color: 0x000000, transparent: true, opacity: 0.5, depthWrite: false }));
+  blob.rotation.x = -Math.PI / 2; blob.position.y = 0.2; g.add(blob);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.84, 1, 40), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95, depthWrite: false }));
+  ring.rotation.x = -Math.PI / 2; ring.scale.set(Wd * 0.95, L * 0.62, 1); ring.position.y = 0.24; g.add(ring);
+  for (const sx of [-1, 1]) { const hl = glow(0xfff0b0, 2.0, 0.85); hl.position.set(sx * Wd * 0.3, H * 0.4, box.max.z + 0.1); g.add(hl); const tl = glow(0xff2020, 1.6, 0.85); tl.position.set(sx * Wd * 0.3, H * 0.45, box.min.z - 0.1); g.add(tl); }
+  const flame = new THREE.Mesh(new THREE.ConeGeometry(0.42, 3.2, 10), new THREE.MeshBasicMaterial({ color: 0xffb02a, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+  flame.rotation.x = -Math.PI / 2; flame.position.set(0, H * 0.36, box.min.z - 1.6); flame.visible = false; g.add(flame);
+  const fg = glow(0xff8a1a, 7, 0.9); fg.position.set(0, H * 0.36, box.min.z - 0.6); fg.visible = false; g.add(fg);
+  const iceBlock = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 0), new THREE.MeshStandardMaterial({ color: 0xbff2ff, transparent: true, opacity: 0.55, roughness: 0.05, metalness: 0.2, depthWrite: false, flatShading: true }));
+  iceBlock.scale.set(Wd * 0.85, H * 0.8, L * 0.68); iceBlock.position.y = H * 0.5; iceBlock.visible = false; g.add(iceBlock);
+  Object.assign(g.userData, { chassis, wheels, fronts, mats, flame, flameGlow: fg, iceBlock, tagY: H + 1.5, blob });
   return g;
 }
 export function nameTag(name, color) {

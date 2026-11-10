@@ -11,6 +11,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 app.use('/vendor/three', express.static(path.join(__dirname, 'node_modules/three/build')));
+app.use('/vendor/three-addons', express.static(path.join(__dirname, 'node_modules/three/examples/jsm')));
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 app.get('/qr', async (req, res) => {
   try {

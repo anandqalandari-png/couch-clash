@@ -2,6 +2,9 @@
 import * as Race from './race.js';
 import * as Sketch from './sketch.js';
 import * as Turf from './turf.js';
+import * as Football from './football.js';
+import * as Punch from './punch.js';
+import * as Blast from './blast.js';
 
 export const COLORS = ['#ff4b2b', '#2b7bff', '#ffc62b', '#19c2a0', '#b455ff', '#ff7ac8', '#7bd834', '#ff9a2b'];
 const MAX_PLAYERS = 8;
@@ -12,7 +15,16 @@ const GAMES = {
             icon: '<svg viewBox="0 0 100 100"><path d="M18 78l8-26 42-42 18 18-42 42z" fill="#14110f"/><path d="M30 56l14 14" stroke="#ffc62b" stroke-width="5"/><path d="M68 10l18 18" stroke="#ff4b2b" stroke-width="9"/></svg>' },
   turf:   { mod: Turf,   name: 'Turf War',    cls: 'turf',   min: 2, range: '2–8 players', desc: 'Loop out, claim land, cut trails. Get knocked out and you restart on empty ground.',
             icon: '<svg viewBox="0 0 100 100"><rect x="14" y="14" width="44" height="44" rx="6" fill="#14110f"/><rect x="42" y="42" width="44" height="44" rx="6" fill="#ff4b2b" stroke="#14110f" stroke-width="5"/><rect x="22" y="22" width="14" height="14" rx="3" fill="#ffc62b"/></svg>' },
+  football: { mod: Football, name: 'Car Football', cls: 'football', min: 2, range: '2–8 players', desc: 'Cars, one giant ball, two goals. Teams reshuffle after every goal.',
+            icon: '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="38" fill="#fff" stroke="#14110f" stroke-width="6"/><path d="M50 30l17 12-6 20H39l-6-20z" fill="#14110f"/></svg>' },
+  punch:  { mod: Punch,  name: 'Punchline',   cls: 'punch',  min: 3, range: '3–8 players', desc: 'Answer silly prompts on your phone. The room votes for the funniest.',
+            icon: '<svg viewBox="0 0 100 100"><path d="M12 18h76v50H46L26 86V68H12z" fill="#14110f"/><path d="M30 36h40M30 50h26" stroke="#ffc62b" stroke-width="7" stroke-linecap="round"/></svg>' },
+  blast:  { mod: Blast,  name: 'Blast Zone',  cls: 'blast',  min: 2, range: '2–8 players', desc: 'Bomb the crates, grab pickups, trap your friends. Ghosts throw bombs back in.',
+            icon: '<svg viewBox="0 0 100 100"><circle cx="46" cy="60" r="30" fill="#ffc62b"/><path d="M62 36l10-12" stroke="#ffc62b" stroke-width="8" stroke-linecap="round"/><path d="M76 12l4 8 8 2-7 5 1 9-7-5-8 4 3-9-6-6h9z" fill="#ff4b2b"/></svg>' },
 };
+
+// short sound effects (CC0, by Kenney); silently skipped if the browser cannot play them
+export function sfx(name, vol = 1) { try { const a = new Audio('/assets/sfx/' + name + '.ogg'); a.volume = Math.max(0, Math.min(1, vol)) * 0.6; a.play().catch(() => {}); } catch {} }
 
 const $ = (s) => document.querySelector(s);
 const lobbyEl = $('#lobby'), stage = $('#stage');
@@ -102,7 +114,7 @@ function syncLobby() {
   const v = vip();
   const scores = [...S.players].sort((a, b) => b.score - a.score).map((p) => ({ name: p.name, color: p.color, score: p.score }));
   for (const p of online()) to(p.id, { m: 'lobby', vip: p === v, name: p.name, color: p.color, code: S.code, scores,
-    games: Object.entries(GAMES).map(([k, g]) => ({ k, name: g.name, desc: g.range })) });
+    games: Object.entries(GAMES).map(([k, g]) => ({ k, name: g.name, desc: g.range, c: g.cls })) });
 }
 function toast(t, ms = 2600) {
   const el = $('#toast'); el.textContent = t; el.classList.add('on');
@@ -123,7 +135,7 @@ function startGame(key) {
   lobbyEl.hidden = true; stage.hidden = false; stage.innerHTML = '';
   S.gameKey = key;
   S.game = g.mod.start({
-    players: ps, stage, to, all, beep,
+    players: ps, stage, to, all, beep, sfx,
     vip: () => vip(),
     end(results = []) {           // results: [{id, pts}]
       for (const r of results) { const p = S.players.find((x) => x.id === r.id); if (p) p.score += r.pts; }

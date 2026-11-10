@@ -45,7 +45,7 @@
     mode = d.m; evt = null;
     if (d.color) document.documentElement.style.setProperty('--me', d.color);
     quitBtn.hidden = !(isVip && !['lobby', 'done'].includes(d.m));
-    ({ lobby: showLobby, wait: showWait, pick: showPick, race: showRace, done: showDone, sk_choose: showChoose, sk_draw: showDraw, turf: showTurf }[d.m] || showWait)(d);
+    ({ lobby: showLobby, wait: showWait, pick: showPick, race: showRace, done: showDone, sk_choose: showChoose, sk_draw: showDraw, turf: showTurf, pad: showPad, pl_write: showWrite, pl_vote: showVote }[d.m] || showWait)(d);
   }
 
   // ---------- join ----------
@@ -70,7 +70,7 @@
   function showLobby(d) {
     screen('', `<div class="me"><i></i>${esc(d.name)}</div>
       <h2 style="margin:16px 0 6px">${d.vip ? 'Pick a game' : 'Lobby'}</h2>
-      ${d.vip ? `<p>You joined first, so you are the host.</p><div class="stack" style="margin-top:14px">${d.games.map((g, i) => `<button class="btn ${['red', '', 'teal'][i] || ''}" data-k="${g.k}">${esc(g.name)}<small>${esc(g.desc)}</small></button>`).join('')}</div>`
+      ${d.vip ? `<p>You joined first, so you are the host.</p><div class="stack" style="margin-top:14px">${d.games.map((g) => `<button class="btn g-${esc(g.c || '')}" data-k="${g.k}">${esc(g.name)}<small>${esc(g.desc)}</small></button>`).join('')}</div>`
         : '<p>Waiting for the host to pick a game.</p>'}
       <div class="grow"></div><label>Scores</label>${scoreList(d.scores)}`);
     app.querySelectorAll('[data-k]').forEach((b) => (b.onclick = () => send({ a: 'menu', game: b.dataset.k })));
@@ -112,7 +112,7 @@
   function showRace(d) {
     let useTilt = store.get('cc_tilt') !== '0', flip = store.get('cc_flip') === '1', gas = false, brake = false, L = false, R = false, ready = false, lastSent = '', lastT = 0;
     const root = screen('race', `<div class="rc"><div class="left"></div>
-        <div class="mid"><div class="tilt"><i></i></div><button class="pw"><span>${esc(d.power)}<small>CHARGING</small></span></button>
+        <div class="mid"><div class="tilt"><i></i></div><button class="pw"><span>${esc(d.power)}<small>CHARGING</small></span></button><button class="it"><span><b>ITEM</b><small>HIT A ? BOX</small></span></button>
         <div class="opts"><button id="mt"></button><button id="fl">Flip</button></div></div><div class="right"></div></div>
       <div class="rotate"><div><div class="ph">📱</div><h2>Turn your phone sideways</h2><p style="margin-top:10px">Hold it like a steering wheel.</p></div></div>`);
     const left = root.querySelector('.left'), right = root.querySelector('.right'), pw = root.querySelector('.pw'), dot = root.querySelector('.tilt i'), mt = root.querySelector('#mt');
@@ -130,8 +130,13 @@
     mt.onclick = () => { useTilt = !useTilt; store.set('cc_tilt', useTilt ? '1' : '0'); if (useTilt) askMotion(); build(); };
     root.querySelector('#fl').onclick = () => { flip = !flip; store.set('cc_flip', flip ? '1' : '0'); };
     hold(pw, () => { if (ready) { send({ a: 'pw' }); buzz(40); } });
+    const it = root.querySelector('.it'); let hasItem = false;
+    hold(it, () => { if (hasItem) { send({ a: 'it' }); buzz(40); } });
     const setReady = (r) => { ready = r; pw.classList.toggle('ready', r); pw.querySelector('small').textContent = r ? 'TAP TO USE' : 'CHARGING'; if (r) buzz(25); };
-    evt = (m) => { if (m.e === 'pw') setReady(!!m.ready); if (m.e === 'hit') buzz([60, 40, 120]); };
+    evt = (m) => {
+      if (m.e === 'pw') setReady(!!m.ready); if (m.e === 'hit') buzz([60, 40, 120]);
+      if (m.e === 'item') { hasItem = !!m.k; it.classList.toggle('ready', hasItem); it.querySelector('b').textContent = hasItem ? m.icon + ' ' + m.name : 'ITEM'; it.querySelector('small').textContent = hasItem ? 'TAP TO USE' : 'HIT A ? BOX'; if (hasItem) buzz(25); }
+    };
     // iOS: tilt needs an explicit permission tap
     if (useTilt && !motionAsked && window.DeviceOrientationEvent && typeof window.DeviceOrientationEvent.requestPermission === 'function') {
       const g = el('<div class="gate"><div><h2 style="color:#ffc62b">Tilt steering</h2><p style="margin:12px 0 18px">Tap once so your phone can share its tilt.</p><button class="btn">ENABLE TILT</button></div></div>');
@@ -221,6 +226,49 @@
       if (m.st === 'out') { buzz(400); st.textContent = 'No empty land left. You are out'; pct.textContent = 'OUT'; }
       if (m.st === 'cap') buzz(20);
     };
+  }
+
+  // ---------- joystick + one button (Car Football, Blast Zone) ----------
+  function showPad(d) {
+    const root = screen('padm', `<div class="pad2"><div class="joy"><div class="ttl">${esc(d.title || '')}</div><div class="stick"><i></i></div><div class="sub">${esc(d.sub || '')}</div></div><button class="act"><span>${esc(d.btn || 'GO')}</span></button></div>`);
+    const pad = root.querySelector('.pad2'), joy = root.querySelector('.joy'), knob = root.querySelector('.stick i'), act = root.querySelector('.act'), ttl = root.querySelector('.ttl'), sub = root.querySelector('.sub');
+    let ox = 0, oy = 0, active = null, jx = 0, jy = 0, sx = 9, sy = 9, lastT = 0, cdT = 0;
+    const push = (force) => { const now = Date.now(); if (!force && (now - lastT < 33 || (Math.abs(jx - sx) < 0.03 && Math.abs(jy - sy) < 0.03))) return; sx = jx; sy = jy; lastT = now; send({ a: 'joy', x: Math.round(jx * 100) / 100, y: Math.round(jy * 100) / 100 }); };
+    joy.addEventListener('pointerdown', (e) => { e.preventDefault(); if (active !== null) return; active = e.pointerId; ox = e.clientX; oy = e.clientY; try { joy.setPointerCapture(e.pointerId); } catch {} });
+    joy.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== active) return; let dx = e.clientX - ox, dy = e.clientY - oy; const m = Math.hypot(dx, dy), R = 56;
+      if (m > R) { ox += dx - dx * R / m; oy += dy - dy * R / m; dx *= R / m; dy *= R / m; } // the centre follows the thumb, so reversing is instant
+      knob.style.transform = `translate(${dx}px,${dy}px)`; jx = dx / R; jy = dy / R; push(false);
+    });
+    const up = (e) => { if (e.pointerId !== active) return; active = null; knob.style.transform = ''; jx = jy = 0; push(true); };
+    joy.addEventListener('pointerup', up); joy.addEventListener('pointercancel', up);
+    hold(act, () => { send({ a: 'btn', d: 1 }); buzz(15); }, () => send({ a: 'btn', d: 0 }));
+    const beat = setInterval(() => { if (jx !== sx || jy !== sy || (active !== null && Date.now() - lastT > 300)) push(true); if (cdT && Date.now() > cdT) { cdT = 0; act.classList.remove('cd'); } }, 50);
+    evt = (m) => {
+      if (m.e !== 'pad') return;
+      if (m.bg) pad.style.background = m.bg; if (m.title !== undefined) ttl.textContent = m.title; if (m.sub !== undefined) sub.textContent = m.sub;
+      if (m.cd) { cdT = Date.now() + m.cd * 1000; act.classList.add('cd'); } if (m.buzz) buzz(m.buzz);
+    };
+    cleanup = () => clearInterval(beat);
+  }
+
+  // ---------- Punchline ----------
+  function showWrite(d) {
+    let i = 0; const ends = Date.now() + d.time * 1000;
+    const step = () => {
+      if (i >= d.prompts.length) { clearInterval(tk); return showWait({ title: 'Answers in!', text: 'Waiting for the others…' }); }
+      const p = d.prompts[i], root = screen('', `<div class="plw"><div class="top"><label>Prompt ${i + 1} of ${d.prompts.length}</label><b class="tm"></b></div><h2>${esc(p.text)}</h2>
+        <textarea maxlength="90" rows="3" placeholder="Type something funny…" autocomplete="off"></textarea><div class="cnt">0 / 90</div><div class="grow"></div><button class="btn red">SEND</button></div>`);
+      const ta = root.querySelector('textarea'), go = () => { const t = ta.value.trim(); if (!t) { ta.focus(); return; } send({ a: 'ans', id: p.id, text: t }); i++; step(); };
+      ta.addEventListener('input', () => { root.querySelector('.cnt').textContent = ta.value.length + ' / 90'; });
+      root.querySelector('.btn').onclick = go; setTimeout(() => { try { ta.focus(); } catch {} }, 60);
+    };
+    const tk = setInterval(() => { const el = app.querySelector('.plw .tm'); if (el) el.textContent = Math.max(0, Math.ceil((ends - Date.now()) / 1000)); }, 250);
+    step(); cleanup = () => clearInterval(tk);
+  }
+  function showVote(d) {
+    const root = screen('', `<div class="plw"><label>Vote for the funniest</label><h2>${esc(d.prompt)}</h2><div class="stack" style="margin-top:14px">${d.opts.map((o) => `<button class="btn ghost vote" data-k="${o.k}">${esc(o.text)}</button>`).join('')}</div></div>`);
+    root.querySelectorAll('[data-k]').forEach((b) => (b.onclick = () => { send({ a: 'vote', k: +b.dataset.k }); buzz(20); showWait({ title: 'Voted!', text: 'Look at the big screen.' }); }));
   }
 
   // ---------- boot ----------
