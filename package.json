@@ -1,0 +1,19 @@
+{
+  "name": "couch-clash",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Party games on one screen, phones as controllers",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "qrcode": "^1.5.4",
+    "three": "^0.187.0",
+    "ws": "^8.22.2"
+  }
+}
