@@ -5,3 +5,7 @@
 - Mini Characters: chars/*.glb
 - Starter Kit 3D Platformer: blocks/brick.glb, sfx/break.ogg, coin.ogg, jump.ogg, land.ogg, fall.ogg
 CC0 means they can be used freely, including commercially, with no attribution required. Credit is given here as a thank-you.
+
+The pictures in sizeup/*.png are from Twemoji (https://github.com/jdecked/twemoji), Copyright Twitter, Inc. and other
+contributors, licensed under CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/). They were converted from SVG to PNG,
+cropped, and a few were rotated; the game also shows them as single-colour silhouettes. CC-BY requires this credit to stay.

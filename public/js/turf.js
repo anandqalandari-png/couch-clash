@@ -57,7 +57,7 @@ export function start(ctx) {
     burst(v.x, v.y, v.color, 40, 380); shake = 1; dirty = true;
     ctx.beep(160, 0.3, 'sawtooth', 0.07);
     const spot = findPatch(v);
-    if (spot) { place(v, spot.cx, spot.cy, spot.r); v.freeze = 0.9; v.flash = 1; ctx.to(v.p.id, { e: 'tf', st: 'ko' }); feed(killer && killer !== v ? `${killer.name} knocked out ${v.name}` : `${v.name} tripped on their own trail`, v.color); }
+    if (spot) { place(v, spot.cx, spot.cy, spot.r); v.freeze = 0.9; v.flash = 1; ctx.to(v.p.id, { e: 'tf', st: 'ko', by: killer && killer !== v ? killer.name : '' }); if (v.ai) v.ai = null; feed(killer && killer !== v ? `${killer.name} knocked out ${v.name}` : `${v.name} tripped on their own trail`, v.color); }
     else { v.out = true; v.outAt = performance.now(); ctx.to(v.p.id, { e: 'tf', st: 'out', pct: 0 }); feed(`${v.name} is out: no empty land left`, v.color); }
     count();
   }
@@ -93,8 +93,47 @@ export function start(ctx) {
     if (a !== b && segDist2(a.x, a.y, t[t.length - 2], t[t.length - 1], b.x, b.y) < HIT * HIT && Math.hypot(a.x - b.x, a.y - b.y) > HEAD) return true;
     return false;
   }
+  // ---------- bots: walk out of their land, turn, come back to close the loop; run home when someone gets near the trail ----------
+  const rnd = (a, b) => a + Math.random() * (b - a), inMap = (x, y, m) => x > m && y > m && x < W - m && y < H - m;
+  function botPlan(pl, b) {
+    let best = b.ang, bs = -1e9;
+    for (let k = 0; k < 12; k++) {
+      const a = Math.random() * 6.283, px = pl.x + Math.cos(a) * 170, py = pl.y + Math.sin(a) * 170; if (!inMap(px, py, 30)) continue;
+      const o = own[cellOf(px, py)], sc = (o === pl.i ? 0 : o === -1 ? 3 : 2) + Math.random() * 1.5; if (sc > bs) { bs = sc; best = a; }
+    }
+    b.mode = 'seek'; b.ang = best; b.t = 4; b.side = Math.random() < 0.5 ? 1 : -1;
+    const sx = pl.x + Math.cos(best) * 150 + Math.cos(best + b.side * 1.57) * 130, sy = pl.y + Math.sin(best) * 150 + Math.sin(best + b.side * 1.57) * 130; if (!inMap(sx, sy, 30)) b.side = -b.side;
+  }
+  function botThink(pl, dt) {
+    const b = pl.ai || (pl.ai = { mode: 'new', t: 0, ang: 0, side: 1, scan: 0, bold: rnd(0.7, 1.25), hx: pl.x, hy: pl.y });
+    pl.moving = true; b.t -= dt; b.scan -= dt;
+    const inside = own[cellOf(pl.x, pl.y)] === pl.i, t = pl.trail;
+    if (b.mode === 'new' || (inside && !t.length && b.mode !== 'seek')) botPlan(pl, b);
+    if (b.mode === 'seek') {
+      if (!inside) { // just left: remember a spot well inside my land, a little to one side, to come back to
+        b.mode = 'out'; b.t = rnd(0.55, 1.2) * b.bold; const [lx, ly] = pl.lastIn, c = Math.cos(b.ang), s2 = Math.sin(b.ang);
+        b.hx = lx - c * 60 - s2 * b.side * 28; b.hy = ly - s2 * 60 + c * b.side * 28; if (own[cellOf(b.hx, b.hy)] !== pl.i) { b.hx = lx - c * 25; b.hy = ly - s2 * 25; }
+      } else if (b.t <= 0) botPlan(pl, b);
+    } else if (b.mode === 'out' && b.t <= 0) { b.mode = 'side'; b.ang += b.side * Math.PI / 2; b.t = rnd(0.5, 1.1) * b.bold; }
+    else if ((b.mode === 'side' || b.mode === 'dodge' || b.mode === 'hunt') && b.t <= 0) b.mode = 'home';
+    if (t.length && b.scan <= 0 && b.mode !== 'dodge') {
+      b.scan = 0.12; let near = 1e9, prey = null, pd = 150;
+      for (const o of P) {
+        if (o === pl || o.out) continue; near = Math.min(near, Math.hypot(o.x - pl.x, o.y - pl.y));
+        for (let k = 0; k < t.length; k += 6) near = Math.min(near, Math.hypot(o.x - t[k], o.y - t[k + 1]));
+        for (let k = 0; k < o.trail.length; k += 4) { const d = Math.hypot(o.trail[k] - pl.x, o.trail[k + 1] - pl.y); if (d < pd) { pd = d; prey = [o.trail[k], o.trail[k + 1]]; } }
+      }
+      if (prey && b.mode !== 'home') { b.mode = 'hunt'; b.t = 0.5; b.ang = Math.atan2(prey[1] - pl.y, prey[0] - pl.x); } // a rival's trail is right there: cut it
+      else if (near < 120 && (b.mode === 'out' || b.mode === 'side')) { if (b.mode === 'out') { b.mode = 'dodge'; b.ang += b.side * Math.PI / 2; b.t = 0.3; } else b.mode = 'home'; } // step aside first, so the way home does not retrace my own trail
+    }
+    if (t.length > 260 && b.mode !== 'dodge') b.mode = 'home'; // far enough, bank it
+    if (b.mode === 'home') { if (Math.hypot(b.hx - pl.x, b.hy - pl.y) < 14 && !inside) { b.hx = pl.lastIn[0]; b.hy = pl.lastIn[1]; } b.ang = Math.atan2(b.hy - pl.y, b.hx - pl.x); }
+    else if (!inMap(pl.x + Math.cos(b.ang) * 45, pl.y + Math.sin(b.ang) * 45, 16)) b.ang += b.side * 7 * dt; // curve away from the wall
+    pl.target = b.ang;
+  }
   function stepPlayer(pl, dt) {
     if (pl.freeze > 0) { pl.freeze -= dt; return; }
+    if (pl.p.bot) botThink(pl, dt);
     if (!pl.moving) return;
     let d = pl.target - pl.ang; d = Math.atan2(Math.sin(d), Math.cos(d)); pl.ang += Math.max(-TURN * dt, Math.min(TURN * dt, d));
     pl.x = Math.max(HEAD, Math.min(W - HEAD, pl.x + Math.cos(pl.ang) * SPEED * dt)); pl.y = Math.max(HEAD, Math.min(H - HEAD, pl.y + Math.sin(pl.ang) * SPEED * dt));
@@ -156,9 +195,9 @@ export function start(ctx) {
   const big = document.createElement('div'); big.className = 'bigmsg'; ctx.stage.appendChild(big);
   const cv = root.querySelector('canvas'), g = cv.getContext('2d'), clockEl = root.querySelector('.clock'), chipsEl = root.querySelector('.chips'), feedEl = root.querySelector('.feed'), field = root.querySelector('.field');
   const chips = P.map((pl) => { const d = document.createElement('div'); d.className = 'chip'; d.innerHTML = `<i style="background:${pl.color}"></i><span></span><b>0%</b><u><s style="background:${pl.color}"></s></u>`; d.querySelector('span').textContent = pl.name; chipsEl.appendChild(d); return d; });
-  let scale = 1, dpr = 1; const bg = document.createElement('canvas'), landC = document.createElement('canvas');
+  const chipKey = []; let scale = 1, dpr = 1; const bg = document.createElement('canvas'), landC = document.createElement('canvas');
   function resize() {
-    const w = field.clientWidth - 8, h = field.clientHeight - 20; scale = Math.min(w / W, h / H); dpr = Math.min(devicePixelRatio || 1, 2);
+    const w = field.clientWidth - 8, h = field.clientHeight - 20; scale = Math.min(w / W, h / H); dpr = Math.min(devicePixelRatio || 1, 1.5);
     for (const c of [cv, bg, landC]) { c.width = Math.round(W * scale * dpr); c.height = Math.round(H * scale * dpr); }
     cv.style.width = W * scale + 'px'; cv.style.height = H * scale + 'px';
     // board background, drawn once
@@ -201,8 +240,8 @@ export function start(ctx) {
     for (const pl of P) {
       const t = pl.trail; if (pl.out || t.length < 2) continue;
       g.beginPath(); g.moveTo(t[0], t[1]); for (let k = 2; k < t.length; k += 2) g.lineTo(t[k], t[k + 1]); g.lineTo(pl.x, pl.y);
-      g.shadowColor = pl.color; g.shadowBlur = 14 * s; g.strokeStyle = pl.color; g.globalAlpha = 0.5; g.lineWidth = TRAIL_W + 3; g.stroke();
-      g.shadowBlur = 0; g.globalAlpha = 0.95; g.strokeStyle = lite[pl.i]; g.lineWidth = TRAIL_W * 0.45; g.stroke(); g.globalAlpha = 1;
+      g.strokeStyle = pl.color; g.globalAlpha = 0.16; g.lineWidth = TRAIL_W + 14; g.stroke(); g.globalAlpha = 0.55; g.lineWidth = TRAIL_W + 3; g.stroke(); // a wide faint stroke gives the glow without a costly blur
+      g.globalAlpha = 0.95; g.strokeStyle = lite[pl.i]; g.lineWidth = TRAIL_W * 0.45; g.stroke(); g.globalAlpha = 1;
     }
     // particles
     for (const p of parts) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.93; p.vy *= 0.93; const a = 1 - p.t / p.life; if (a <= 0) continue; g.globalAlpha = a; g.fillStyle = p.color; g.beginPath(); g.arc(p.x, p.y, p.r * a, 0, 7); g.fill(); }
@@ -230,7 +269,10 @@ export function start(ctx) {
     const tot = Math.max(0, Math.ceil(left)), t = `${Math.floor(tot / 60)}:${String(tot % 60).padStart(2, '0')}`;
     if (clockEl.textContent !== t) { clockEl.textContent = t; clockEl.classList.toggle('low', tot <= 10); }
     const max = Math.max(1, ...P.map((p) => p.land));
-    P.forEach((pl, i) => { const pc = Math.round((pl.land / TOTAL) * 100), txt = pl.out ? 'OUT' : pc + '%', b = chips[i].querySelector('b'); if (b.textContent !== txt) b.textContent = txt; chips[i].querySelector('s').style.width = (pl.land / max) * 100 + '%'; chips[i].classList.toggle('out', pl.out); chips[i].style.order = String(-pl.land); });
+    P.forEach((pl, i) => { // only touch the page when a number actually changes
+      const pc = Math.round((pl.land / TOTAL) * 100), txt = pl.out ? 'OUT' : pc + '%', key = txt + '|' + Math.round((pl.land / max) * 50); if (chipKey[i] === key) return; chipKey[i] = key;
+      chips[i].querySelector('b').textContent = txt; chips[i].querySelector('s').style.width = (pl.land / max) * 100 + '%'; chips[i].classList.toggle('out', pl.out); chips[i].style.order = String(-pl.land);
+    });
   }
   function finish() {
     phase = 'done'; count();

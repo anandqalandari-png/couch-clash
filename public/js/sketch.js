@@ -25,17 +25,20 @@ export function start(ctx) {
       <div class="ring"><svg viewBox="0 0 120 120"><circle class="bg" cx="60" cy="60" r="52"/><circle class="fg" cx="60" cy="60" r="52"/></svg><div class="timer">–</div></div>
       <div class="who"><i></i><span></span></div><div class="stake"></div><div class="blanks"></div><ol></ol></div><canvas class="confetti"></canvas>`;
   ctx.stage.appendChild(root);
-  const cv = root.querySelector('canvas'), cx = cv.getContext('2d'), curtain = root.querySelector('.curtain');
+  const cv = root.querySelector('canvas'), cx = cv.getContext('2d'), mainCx = cx, curtain = root.querySelector('.curtain');
   const q = (s) => root.querySelector(s);
   cx.lineCap = cx.lineJoin = 'round';
-  const drawStroke = (s) => { // smooth curve through the midpoints of the phone's sample points
+  // finished strokes are kept on a second, hidden canvas, so each new point only redraws the stroke in progress
+  const inked = document.createElement('canvas'); inked.width = 1600; inked.height = 1200; const ix = inked.getContext('2d'); ix.lineCap = ix.lineJoin = 'round';
+  const drawStroke = (s, cx = mainCx) => { // smooth curve through the midpoints of the phone's sample points
     const p = s.p, X = 1600, Y = 1200; if (!p.length) return; cx.strokeStyle = s.c; cx.lineWidth = s.w * X; cx.beginPath(); cx.moveTo(p[0] * X, p[1] * Y);
     if (p.length === 2) cx.lineTo(p[0] * X + 0.1, p[1] * Y);
     for (let i = 2; i < p.length - 2; i += 2) cx.quadraticCurveTo(p[i] * X, p[i + 1] * Y, (p[i] + p[i + 2]) / 2 * X, (p[i + 1] + p[i + 3]) / 2 * Y);
     if (p.length >= 4) cx.lineTo(p[p.length - 2] * X, p[p.length - 1] * Y);
     cx.stroke();
   };
-  const redraw = () => { cx.clearRect(0, 0, 1600, 1200); strokes.forEach(drawStroke); };
+  const paint = () => { cx.clearRect(0, 0, 1600, 1200); cx.drawImage(inked, 0, 0); for (const s of strokes) if (!s.fin) drawStroke(s); };
+  const redraw = () => { ix.clearRect(0, 0, 1600, 1200); for (const s of strokes) if (s.fin) drawStroke(s, ix); paint(); }; // full rebuild: only after undo, clear or a new turn
   const ringFg = root.querySelector('.ring .fg'), LEN = 2 * Math.PI * 52; ringFg.style.strokeDasharray = LEN;
   function confetti() {
     const c = root.querySelector('.confetti'), x = c.getContext('2d'); c.width = innerWidth; c.height = innerHeight;
@@ -111,8 +114,9 @@ export function start(ctx) {
         let s = strokes.find((x) => x.n === d.n);
         if (!s) { s = { n: d.n, c: /^#[0-9a-f]{6}$/i.test(d.c) ? d.c : '#14110f', w: Math.min(0.08, Math.max(0.003, +d.w || 0.01)), p: [] }; strokes.push(s); }
         for (const v of d.p) s.p.push(+v || 0);
-        redraw();
-      } else if (d.a === 'undo') { strokes.pop(); redraw(); }
+        if (d.end && !s.fin) { s.fin = true; drawStroke(s, ix); }
+        paint();
+      } else if (d.a === 'undo') { for (const s of strokes) s.fin = true; strokes.pop(); redraw(); }
       else if (d.a === 'clear') { strokes = []; redraw(); }
       else if (d.a === 'guessed') { const g = players.find((x) => x.id === d.id && x !== p); if (g) reveal(g); }
     },

@@ -34,7 +34,7 @@ const QUALITY = new URLSearchParams(location.search).get('q'); // ?q=high or ?q=
 // ============================================================
 export function start(ctx) {
   const stage = ctx.stage;
-  const racers = [...ctx.players].sort((a, b) => a.races - b.races).slice(0, MAX_RACERS);
+  const racers = ctx.players.filter((p) => !p.bot).sort((a, b) => a.races - b.races).slice(0, MAX_RACERS), botPlayers = ctx.players.filter((p) => p.bot);
   const picks = new Map(racers.map((p, i) => [p.id, i % CARS.length]));
   let trackIdx = Math.floor(Math.random() * TRACKS.length), phase = 'pick', raf = 0, game = null, resultRows = null, pointRows = [];
 
@@ -76,10 +76,10 @@ export function start(ctx) {
     load.remove(); phase = 'countdown';
     for (const p of racers) p.races++;
     const T = buildTrack(TRACKS[trackIdx]), LAPS = T.def.laps;
-    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    let level = QUALITY === 'low' ? 3 : 0; // 0 = full, 1 = lower resolution, 2 = no real shadows, 3 = lowest
-    const baseRatio = Math.min(devicePixelRatio || 1, racers.length > 2 ? 1.5 : 2);
-    const applyLevel = () => { renderer.setPixelRatio(level === 0 ? baseRatio : level < 3 ? Math.min(baseRatio, 1) : 0.75); world.sun.castShadow = level < 2; renderer.shadowMap.needsUpdate = true; for (const c of cars) c.mesh.userData.blob.material.opacity = level < 2 ? 0.28 : 0.6; };
+    const renderer = new THREE.WebGLRenderer({ antialias: (devicePixelRatio || 1) < 2, powerPreference: 'high-performance' });
+    let shadowFrames = 3, level = QUALITY === 'low' ? 3 : 0; // 0 = full, 1 = lower resolution, 2 = no real shadows, 3 = lowest
+    const baseRatio = Math.min(devicePixelRatio || 1, QUALITY === 'high' ? 2 : racers.length > 1 ? 1.25 : 1.5);
+    const applyLevel = () => { renderer.setPixelRatio(level === 0 ? baseRatio : level < 3 ? Math.min(baseRatio, 1) : 0.75); world.sun.castShadow = level < 2; shadowFrames = 3; };
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false;
     renderer.setScissorTest(true); stage.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
@@ -102,11 +102,13 @@ export function start(ctx) {
       const c = { p, bot: !p, name, color, type, mesh, tag, ring, flash, beam, shield, item: null, shieldT: 0, zapT: 0, botItemT: 0, x: 0, z: 0, h: 0, speed: 0, idx: 0, total: 0, lat: 0, steer: 0, gas: false, brake: false,
         boostT: 0, ghostT: 0, frozenT: 0, spinT: 0, kx: 0, kz: 0, cd: 4, finished: false, place: 0, stuckT: 0, lastTotal: 0, ringT: 0, flashT: 0, beamT: 0, noteT: 0,
         skill: rnd(0.86, 0.95), botLat: rnd(-0.5, 0.5), botPw: rnd(3, 9), ready: false, emit: 0 };
+      mesh.traverse((o) => { if (o.isMesh) o.castShadow = false; }); if (mesh.userData.blob) mesh.userData.blob.material.opacity = 0.55; // cars use a soft blob shadow, so the big shadow map is drawn once and never again
       cars.push(c); return c;
     };
     racers.forEach((p) => mk(p, picks.get(p.id), p.color, p.name));
     const botCols = ['#b9bec6', '#d6c38a', '#8fa0bd'];
-    for (let b = 0; cars.length < 4; b++) mk(null, (b * 2 + 1) % CARS.length, botCols[b % 3], 'CPU ' + (b + 1), BOT_MODELS[b % BOT_MODELS.length]);
+    botPlayers.slice(0, 8 - cars.length).forEach((bp, b) => mk(null, (b * 2 + 1) % CARS.length, bp.color, bp.name, BOT_MODELS[b % BOT_MODELS.length])); // lobby bots race as named CPU cars
+    for (let b = botPlayers.length; cars.length < 4; b++) mk(null, (b * 2 + 1) % CARS.length, botCols[b % 3], 'CPU ' + (b + 1), BOT_MODELS[b % BOT_MODELS.length]);
     cars.forEach((c, i) => {
       const row = Math.floor(i / 2), side = i % 2 ? 1 : -1, idx = (T.N - 6 - row * 5 + T.N) % T.N, lat = side * T.hw * 0.4;
       c.idx = idx; c.total = idx - T.N; c.x = T.px[idx] + T.tz[idx] * lat; c.z = T.pz[idx] - T.tx[idx] * lat; c.h = Math.atan2(T.tx[idx], T.tz[idx]); c.lastTotal = c.total;
@@ -142,8 +144,15 @@ export function start(ctx) {
     for (const c of humans) ctx.to(c.p.id, { m: 'race', color: c.color, power: c.type.power, car: c.type.name });
 
     // ---------- simulation ----------
-    let fAcc = 0, fN = 0, clock = 0, cdT = 3.999, lastCd = 4, finishCount = 0, endT = -1, raceTime = 0, last = performance.now();
-    const note = (c, t) => { if (c.hud) { c.hud.note.textContent = t; c.noteT = 1.6; } };
+    let fAcc = 0, fN = 0, frameNo = 0, clock = 0, cdT = 3.999, lastCd = 4, finishCount = 0, endT = -1, raceTime = 0, last = performance.now();
+    const note = (c, t, sub) => { if (!c.hud) return; c.hud.note.textContent = t; if (sub) { const sm = document.createElement('small'); sm.textContent = sub; c.hud.note.appendChild(sm); } c.noteT = sub ? 2.4 : 1.6; };
+    // tell the victim who hit them and with what, on their part of the screen and on their phone; the attacker gets a short confirmation
+    function tellHit(v, by, label, what, icon) {
+      const own = by === v, who = by ? by.name : 'Someone';
+      note(v, label, own ? `${icon} your own ${what}` : `${icon} ${who}'s ${what}`);
+      if (v.p) ctx.to(v.p.id, { e: 'hit', icon, text: own ? `You ran into your own ${what}` : `${who} hit you with ${/^(Shockwave|Freeze)$/.test(what) ? what : 'a ' + what}` });
+      if (by && !own) { if (by.noteT <= 0) note(by, 'HIT!', `${icon} ${v.name}`); if (by.p) ctx.to(by.p.id, { e: 'got', icon, text: `You hit ${v.name}` }); }
+    }
     function locate(c) {
       let best = 1e12, bi = c.idx;
       for (let k = -14; k <= 14; k++) { const j = (c.idx + k + T.N) % T.N, d = (T.px[j] - c.x) ** 2 + (T.pz[j] - c.z) ** 2; if (d < best) { best = d; bi = j; } }
@@ -159,11 +168,11 @@ export function start(ctx) {
       else if (k === 'titan') {
         c.ring.visible = true; c.ringT = 0.5; c.ring.position.set(c.x, 0.5, c.z);
         for (let k = 0; k < 60; k++) { const a = Math.random() * 6.28, v = rnd(20, 60); FX.emit(c.x, 1, c.z, Math.cos(a) * v, rnd(4, 16), Math.sin(a) * v, rnd(0.4, 0.8), 0.9, spark, 1, 0.2, 30); }
-        for (const o of cars) { if (o === c || o.ghostT > 0 || o.finished) continue; const dx = o.x - c.x, dz = o.z - c.z, d = Math.hypot(dx, dz); if (d < 34 && !blocked(o)) { o.kx = dx / (d || 1) * 34; o.kz = dz / (d || 1) * 34; o.spinT = 1.1; o.speed *= 0.45; note(o, 'SHOCKED!'); if (o.p) ctx.to(o.p.id, { e: 'hit' }); } }
+        for (const o of cars) { if (o === c || o.ghostT > 0 || o.finished) continue; const dx = o.x - c.x, dz = o.z - c.z, d = Math.hypot(dx, dz); if (d < 34 && !blocked(o, c, 'Shockwave')) { o.kx = dx / (d || 1) * 34; o.kz = dz / (d || 1) * 34; o.spinT = 1.1; o.speed *= 0.45; tellHit(o, c, 'SHOCKED!', 'Shockwave', '💥'); } }
       } else if (k === 'frost') {
         let t = null, bd = 1e9;
         for (const o of cars) { if (o === c || o.ghostT > 0 || o.finished) continue; const ahead = o.total - c.total, d = Math.hypot(o.x - c.x, o.z - c.z); if (ahead > 0 && ahead < 110 && ahead < bd) { bd = ahead; t = o; } else if (!t && d < 45) t = o; }
-        if (t) { c.beamT = 0.35; c.beamTarget = t; c.beam.visible = true; if (!blocked(t)) { t.frozenT = 2.8; note(t, 'FROZEN!'); if (t.p) ctx.to(t.p.id, { e: 'hit' }); } } else { c.cd = 3; note(c, 'NO TARGET'); }
+        if (t) { c.beamT = 0.35; c.beamTarget = t; c.beam.visible = true; if (!blocked(t, c, 'Freeze')) { t.frozenT = 2.8; tellHit(t, c, 'FROZEN!', 'Freeze', '❄️'); } } else { c.cd = 3; note(c, 'NO TARGET'); }
       } else if (k === 'warp') {
         c.flash.position.set(c.x, 1.5, c.z); c.flash.visible = true; c.flashT = 0.4;
         for (let k = 0; k < 40; k++) FX.emit(c.x + rnd(-2, 2), rnd(0.5, 3), c.z + rnd(-2, 2), rnd(-6, 6), rnd(2, 12), rnd(-6, 6), rnd(0.4, 0.9), 0.8, cyan, 1, 0.3);
@@ -188,12 +197,16 @@ export function start(ctx) {
       ctx.beep(90, 0.35, 'sawtooth', 0.08);
     };
     const puff = (q, col) => { for (let e = 0; e < 30; e++) FX.emit(q.x + rnd(-2, 2), rnd(0.5, 3.5), q.z + rnd(-2, 2), rnd(-8, 8), rnd(2, 12), rnd(-8, 8), rnd(0.3, 0.8), 0.8, col, 1, 0.3); };
-    function blocked(v) { // true when the victim's shield or ghost form absorbs the hit
+    function blocked(v, by, what) { // true when the victim's shield or ghost form absorbs the hit
       if (v.finished || v.ghostT > 0) return true;
-      if (v.shieldT > 0) { v.shieldT = 0; note(v, 'BLOCKED!'); puff(v, cyan); return true; }
+      if (v.shieldT > 0) {
+        v.shieldT = 0; note(v, 'BLOCKED!', by && by !== v && what ? `🛡️ ${by.name}'s ${what}` : ''); puff(v, cyan);
+        if (v.p && by && by !== v) ctx.to(v.p.id, { e: 'got', icon: '🛡️', text: `Shield blocked ${by.name}'s ${what}` }); if (by && by !== v && by.p) ctx.to(by.p.id, { e: 'hit', icon: '🛡️', text: `${v.name} blocked your ${what}` });
+        return true;
+      }
       return false;
     }
-    function wreck(v, label) { if (blocked(v)) return; v.spinT = 1.2; v.speed *= 0.3; note(v, label); if (v.p) ctx.to(v.p.id, { e: 'hit' }); }
+    function wreck(v, label, by, what, icon) { if (blocked(v, by, what)) return; v.spinT = 1.2; v.speed *= 0.3; tellHit(v, by, label, what, icon); }
     function giveItem(c) { // cars at the back get the stronger catch-up items
       const ord = order(), f = ord.length > 1 ? ord.indexOf(c) / (ord.length - 1) : 0, lead = ord[0] === c;
       const w = { rocket: lead ? 1 : 3, mine: 2 + 2 * (1 - f), shield: 2 + (1 - f), turbo: 2 + 2 * f, zap: lead ? 0 : 0.3 + 2.5 * f, swap: lead ? 0 : 0.2 + 2 * f };
@@ -209,8 +222,8 @@ export function start(ctx) {
       else if (k === 'mine') { const mesh = new THREE.Mesh(new THREE.SphereGeometry(1.1, 12, 8), new THREE.MeshLambertMaterial({ color: 0x1b1b21 })), gl = glow(0xff2020, 5, 0.9), x = c.x - Math.sin(c.h) * 4.5, z = c.z - Math.cos(c.h) * 4.5; mesh.add(gl); mesh.position.set(x, 1, z); scene.add(mesh); mines.push({ owner: c, x, z, t: 0, mesh, gl }); }
       else if (k === 'shield') c.shieldT = 9;
       else if (k === 'turbo') c.boostT = Math.max(c.boostT, 2.2);
-      else if (k === 'zap') { for (const o of ahead) { if (blocked(o)) continue; o.zapT = 3; o.speed *= 0.55; note(o, 'ZAPPED!'); if (o.p) ctx.to(o.p.id, { e: 'hit' }); for (let q = 0; q < 26; q++) FX.emit(o.x + rnd(-1.5, 1.5), rnd(0.5, 9), o.z + rnd(-1.5, 1.5), rnd(-4, 4), rnd(-6, 2), rnd(-4, 4), rnd(0.25, 0.6), 0.9, spark, 1, 0.2); } ctx.beep(1400, 0.25, 'square', 0.05); }
-      else if (k === 'swap') { const o = ahead[0]; if (!blocked(o)) { for (const key of ['x', 'z', 'h', 'idx', 'total', 'lat', 'speed', 'lastTotal']) { const tmp = c[key]; c[key] = o[key]; o[key] = tmp; } for (const q of [c, o]) { note(q, 'SWAPPED!'); if (q.camPos) { q.camPos.set(q.x - Math.sin(q.h) * 12, 6, q.z - Math.cos(q.h) * 12); q.look.set(q.x, 1.5, q.z); } puff(q, cyan); } if (o.p) ctx.to(o.p.id, { e: 'hit' }); } }
+      else if (k === 'zap') { for (const o of ahead) { if (blocked(o, c, 'Zap')) continue; o.zapT = 3; o.speed *= 0.55; tellHit(o, c, 'ZAPPED!', 'Zap', '⚡'); for (let q = 0; q < 26; q++) FX.emit(o.x + rnd(-1.5, 1.5), rnd(0.5, 9), o.z + rnd(-1.5, 1.5), rnd(-4, 4), rnd(-6, 2), rnd(-4, 4), rnd(0.25, 0.6), 0.9, spark, 1, 0.2); } ctx.beep(1400, 0.25, 'square', 0.05); }
+      else if (k === 'swap') { const o = ahead[0]; if (!blocked(o, c, 'Swap')) { for (const key of ['x', 'z', 'h', 'idx', 'total', 'lat', 'speed', 'lastTotal']) { const tmp = c[key]; c[key] = o[key]; o[key] = tmp; } for (const q of [c, o]) { note(q, 'SWAPPED!', q === o ? `🔀 ${c.name} took your place` : `🔀 with ${o.name}`); if (q.camPos) { q.camPos.set(q.x - Math.sin(q.h) * 12, 6, q.z - Math.cos(q.h) * 12); q.look.set(q.x, 1.5, q.z); } puff(q, cyan); } if (o.p) ctx.to(o.p.id, { e: 'hit', icon: '🔀', text: `${c.name} swapped places with you` }); if (c.p) ctx.to(c.p.id, { e: 'got', icon: '🔀', text: `Swapped with ${o.name}` }); } }
     }
     function stepItems(dt) {
       for (const b of boxes) { if (b.t > 0) { b.t -= dt; continue; } for (const c of cars) if (!c.item && !c.finished && (b.x - c.x) ** 2 + (b.z - c.z) ** 2 < 11) { b.t = 5; giveItem(c); for (let k = 0; k < 16; k++) FX.emit(b.x, 2, b.z, rnd(-10, 10), rnd(3, 14), rnd(-10, 10), rnd(0.3, 0.6), 0.7, spark, 1, 0.2, 30); break; } }
@@ -222,12 +235,12 @@ export function start(ctx) {
         r.x = T.px[i0] + (T.px[i1] - T.px[i0]) * u + T.tz[i0] * r.lat; r.z = T.pz[i0] + (T.pz[i1] - T.pz[i0]) * u - T.tx[i0] * r.lat;
         r.mesh.position.set(r.x, 1.4, r.z); r.mesh.rotation.y = Math.atan2(T.tx[i0], T.tz[i0]);
         FX.emit(r.x, 1.4, r.z, rnd(-1, 1), rnd(0, 2), rnd(-1, 1), 0.4, 1, Math.random() < 0.5 ? fire : smoke, 0.8, 1.5);
-        let done = r.t > 3.5; for (const o of cars) { if (o === r.owner || o.finished || o.ghostT > 0) continue; if ((o.x - r.x) ** 2 + (o.z - r.z) ** 2 < 20) { wreck(o, 'ROCKETED!'); done = true; break; } }
+        let done = r.t > 3.5; for (const o of cars) { if (o === r.owner || o.finished || o.ghostT > 0) continue; if ((o.x - r.x) ** 2 + (o.z - r.z) ** 2 < 20) { wreck(o, 'ROCKETED!', r.owner, 'Rocket', '🚀'); done = true; break; } }
         if (done) { boom(r.x, r.z); scene.remove(r.mesh); rockets.splice(i, 1); }
       }
       for (let i = mines.length - 1; i >= 0; i--) {
         const m = mines[i]; m.t += dt; m.gl.material.opacity = 0.4 + 0.5 * Math.abs(Math.sin(m.t * 6));
-        let done = m.t > 45; if (m.t > 0.7) for (const o of cars) { if (o.finished || o.ghostT > 0 || (o === m.owner && m.t < 2)) continue; if ((o.x - m.x) ** 2 + (o.z - m.z) ** 2 < 14) { wreck(o, 'BOOM!'); boom(m.x, m.z); done = true; break; } }
+        let done = m.t > 45; if (m.t > 0.7) for (const o of cars) { if (o.finished || o.ghostT > 0 || (o === m.owner && m.t < 2)) continue; if ((o.x - m.x) ** 2 + (o.z - m.z) ** 2 < 14) { wreck(o, 'BOOM!', m.owner, 'Mine', '💣'); boom(m.x, m.z); done = true; break; } }
         if (done) { scene.remove(m.mesh); mines.splice(i, 1); }
       }
     }
@@ -326,12 +339,13 @@ export function start(ctx) {
         set('spd', Math.round(Math.abs(c.speed) * 3.2 / 5) * 5, (v) => { h.spd.textContent = v; });
         set('bst', c.boostT > 0, (v) => h.el.classList.toggle('boost', v));
         set('item', c.item || '', (v) => { h.item.textContent = v ? ITEMS[v][1] + ' ' + ITEMS[v][0] : ''; h.item.classList.toggle('on', !!v); });
-        h.bar.style.width = (c.cd <= 0 ? 100 : (1 - c.cd / c.type.cd) * 100) + '%';
-        set('note', c.finished ? ORD[c.place - 1].toUpperCase() + ' PLACE' : c.noteT > 0 ? h.note.textContent : '', (v) => { h.note.textContent = v; });
+        set('bar', c.cd <= 0 ? 100 : Math.round((1 - c.cd / c.type.cd) * 50) * 2, (v) => { h.bar.style.width = v + '%'; });
+        if (c.finished) set('note', ORD[c.place - 1].toUpperCase() + ' PLACE', (v) => { h.note.textContent = v; }); else if (c.noteT <= 0) set('note', '', (v) => { h.note.textContent = v; }); else h.cache.note = null;
       }
       const key = ord.map((c) => c.name).join('|');
       if (standEl._k !== key) { standEl._k = key; standEl.innerHTML = ''; ord.forEach((c, i) => { const li = document.createElement('li'); li.innerHTML = `<span>${i + 1}</span><i style="background:${c.color}"></i><span></span>`; li.lastChild.textContent = c.name; standEl.appendChild(li); }); }
-      // minimap
+      // minimap (every third frame is plenty)
+      if (frameNo % 3) return;
       const w = mapC.clientWidth, hh = mapC.clientHeight; if (!w || !hh) return;
       if (mapC.width !== w * 2 || mapC.height !== hh * 2) { mapC.width = w * 2; mapC.height = hh * 2; }
       const s = Math.min((w * 2 - 40) / (mxx - mnx), (hh * 2 - 40) / (mxz - mnz)), ox = w - (mnx + mxx) / 2 * -s, oz = hh - (mnz + mxz) / 2 * s;
@@ -367,10 +381,12 @@ export function start(ctx) {
       }
       visuals(dt); hud();
       const H = innerHeight, pr = renderer.getPixelRatio();
-      renderer.shadowMap.needsUpdate = level < 2;
-      if (!QUALITY && phase === 'race') { fAcc += dt; fN++; if (fN >= 100) { const avg = fAcc / fN; fAcc = fN = 0; if (avg > 0.028 && level < 3) { level++; applyLevel(); } } }
+      frameNo++; if (shadowFrames > 0) { shadowFrames--; renderer.shadowMap.needsUpdate = true; } // static shadows: drawn for the first frames only
+      if (!QUALITY && phase !== 'done' && frameNo > 40) { fAcc += now - lastReal; fN++; if (fN >= 50) { const avg = fAcc / fN; fAcc = fN = 0; if (avg > 23 && level < 3) { level++; applyLevel(); } } } // under ~43 fps: step the graphics down
+      lastReal = now;
       humans.forEach((c, i) => { const r = cells[i]; FX.mat.uniforms.scale.value = r.h * pr * 0.74; renderer.setViewport(r.x, H - r.y - r.h, r.w, r.h); renderer.setScissor(r.x, H - r.y - r.h, r.w, r.h); renderer.render(scene, c.cam); });
     }
+    let lastReal = performance.now();
     raf = requestAnimationFrame(frame);
     const sim = (steps, dt = 1 / 60) => { for (let i = 0; i < steps && phase === 'race'; i++) { raceTime += dt; for (const c of cars) stepCar(c, dt); collide(); stepItems(dt); } };
     game = { cars, T, humans, usePower, useItem, boxes, rockets, mines, renderer, layout, sim, get phase() { return phase; }, setPhase: (p) => { phase = p; } };

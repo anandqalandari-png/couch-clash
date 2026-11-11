@@ -24,6 +24,7 @@
       <div class="url" id="joinUrl">…</div>
       <div class="step">and enter</div>
       <div class="code" id="code">····</div>
+      <div class="hint sound" id="soundHint">🔊 Click anywhere on this page once to switch sound on.</div>
       <div class="hint" id="localHint" hidden>Running on localhost: phones can't reach this address. Deploy it, or open the laptop's network address instead.</div>
     </div>
   </section>
@@ -34,7 +35,13 @@
     <p class="empty" id="noPlayers">Waiting for the first phone…</p>
   </section>
 
-  <section class="games" id="games"></section>
+  <section class="games" id="games">
+    <div class="game bots" id="botTile">
+      <div class="n">Bots</div>
+      <div class="stepper"><button id="botMinus" aria-label="Fewer bots">−</button><b id="botN">0</b><button id="botPlus" aria-label="More bots">+</button></div>
+      <div class="d" id="botHint">No bots. Add some to fill out a small group</div>
+    </div>
+  </section>
   <div class="toast" id="toast"></div>
 </main>
 

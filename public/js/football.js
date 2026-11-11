@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { showResults } from './host.js';
 import { loadAssets, buildCar, nameTag, glow, canvasTex, Particles, clamp, rnd } from './race-world.js';
+import { makeView, studioEnv } from './fx.js';
 
 const MATCH_TIME = 180, FL = 54, FW = 33, GOAL_W = 11, CH = 10, BALL_R = 2.8, RANK_POINTS = [10, 7, 5, 3, 2, 1, 1, 1];
 const ACC = 75, TOP = 42, BOOST_TOP = 68, BOOST_CD = 3;
@@ -14,7 +15,7 @@ export function start(ctx) {
   const P = ctx.players.map((p, i) => ({ p, i, name: p.name, color: p.color, team: i % 2, x: 0, z: 0, h: 0, vx: 0, vz: 0, jx: 0, jz: 0, boostCd: 0, boostT: 0, pts: 0, goals: 0, mesh: null, ring: null, touchT: 0 }));
   const ball = { x: 0, z: 0, y: BALL_R, vx: 0, vz: 0, vy: 0, last: null, mesh: null };
   const tally = [0, 0];
-  let phase = 'loading', stopped = false, raf = 0, last = performance.now(), left = MATCH_TIME, wait = 0, clock = 0, pointRows = [], renderer, scene, cam, FX, layout = () => {};
+  let phase = 'loading', stopped = false, raf = 0, last = performance.now(), left = MATCH_TIME, wait = 0, clock = 0, pointRows = [], renderer, scene, cam, FX, view = null, flashes = [], layout = () => {};
 
   // ---------- on-screen HUD ----------
   const hud = document.createElement('div'); hud.className = 'fb';
@@ -62,11 +63,31 @@ export function start(ctx) {
     const col = new THREE.Color(TEAMS[team].color), wh = new THREE.Color(0xffffff);
     for (let k = 0; k < 260; k++) FX.emit(ball.x + rnd(-4, 4), rnd(2, 8), ball.z + rnd(-10, 10), rnd(-30, 30), rnd(20, 60), rnd(-30, 30), rnd(1, 2.4), rnd(1.2, 2.4), Math.random() < 0.6 ? col : wh, 1, 0.1, 55);
     ctx.sfx('coin'); ctx.beep(660, 0.15); setTimeout(() => ctx.beep(990, 0.15), 150); setTimeout(() => ctx.beep(1320, 0.4), 300);
-    for (const c of P) ctx.to(c.p.id, { e: 'pad', buzz: c.team === team ? [80, 60, 80, 60, 200] : 250 });
+    for (const c of P) ctx.to(c.p.id, { e: 'pad', buzz: c.team === team ? [80, 60, 80, 60, 200] : 250, good: c.team === team, toast: c === scorer ? '⚽ You scored! +2' : c === own ? '😬 Own goal' : c.team === team ? `⚽ ${scorer ? scorer.name + ' scored' : 'Goal'}! +1` : `${scorer ? scorer.name : TEAMS[team].name} scored against you` });
     renderHud();
+  }
+  function boost(c) {
+    if (phase !== 'play' || c.boostCd > 0) return; c.boostCd = BOOST_CD; c.boostT = 0.9; c.vx += Math.sin(c.h) * 30; c.vz += Math.cos(c.h) * 30; ctx.sfx('jump', 0.6); ctx.to(c.p.id, { e: 'pad', cd: BOOST_CD });
+  }
+  // ---------- bots: the nearest one on each team gets behind the ball and drives it at the goal, the rest hang back ----------
+  function botDrive(c, dt) {
+    const ai = c.ai || (c.ai = { t: 0, slop: rnd(1.5, 4.5) }); ai.t -= dt; if (ai.t > 0) return; ai.t = rnd(0.08, 0.16);
+    const dir = c.team === 0 ? 1 : -1, mates = P.filter((o) => o.team === c.team), d2 = (o) => (o.x - ball.x) ** 2 + (o.z - ball.z) ** 2;
+    let tx, tz; const chaser = mates.every((o) => o === c || d2(c) <= d2(o) + (o.p.bot ? 0 : 60)); // let a human team-mate have the ball if they are about as close
+    if (chaser) {
+      let ax = dir * FL - ball.x, az = -ball.z; const al = Math.hypot(ax, az) || 1; ax /= al; az /= al;
+      const bx = ball.x - ax * 6.5, bz = ball.z - az * 6.5, rel = (c.x - ball.x) * ax + (c.z - ball.z) * az, off = Math.hypot(c.x - bx, c.z - bz);
+      if (rel > -1.5) { const side = Math.sign((c.x - ball.x) * az - (c.z - ball.z) * ax) || 1; tx = bx + az * side * 8; tz = bz - ax * side * 8; } // on the wrong side: swing round the ball instead of knocking it backwards
+      else if (off > 5) { tx = bx; tz = bz; } else { tx = ball.x + ax * 5; tz = ball.z + az * 5; }
+      let fd = Math.atan2(ball.x - c.x, ball.z - c.z) - c.h; fd = Math.atan2(Math.sin(fd), Math.cos(fd));
+      if (rel < -2 && off < 10 && Math.abs(fd) < 0.35 && Math.random() < 0.5) boost(c);
+    } else { tx = -dir * FL * 0.5 + ball.x * 0.25; tz = ball.z * 0.55 + (c.i % 2 ? 6 : -6); }
+    tx += rnd(-ai.slop, ai.slop); tz += rnd(-ai.slop, ai.slop);
+    const dx = tx - c.x, dz = tz - c.z, m = Math.hypot(dx, dz); c.jx = m > 2 ? dx / m : 0; c.jz = m > 2 ? dz / m : 0;
   }
   function step(dt) {
     for (const c of P) {
+      if (c.p.bot) botDrive(c, dt);
       const jm = Math.hypot(c.jx, c.jz), fx0 = Math.sin(c.h), fz0 = Math.cos(c.h);
       if (jm > 0.15) {
         let d = Math.atan2(c.jx, c.jz) - c.h; d = Math.atan2(Math.sin(d), Math.cos(d)); c.h += clamp(d, -6 * dt, 6 * dt);
@@ -110,14 +131,15 @@ export function start(ctx) {
   // ---------- scene ----------
   async function init() {
     stage.appendChild(big);
-    for (const c of P) ctx.to(c.p.id, { m: 'pad', btn: 'BOOST', color: c.color, title: 'Loading…', sub: '' });
+    for (const c of P) ctx.to(c.p.id, { m: 'pad', btn: 'BOOST', icon: '🚀', color: c.color, title: 'Loading…', sub: '', how: ['How to play Car Football', ['🕹️', 'Drag the left side to drive. The car goes where you point'], ['⚽', 'Ram the ball into the other team\'s goal'], ['🚀', 'BOOST gives a burst of speed every few seconds'], ['🔄', 'Teams reshuffle after every goal. Your screen shows your team colour']] });
     const assets = await loadAssets('neon'); if (stopped) return;
-    renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' }); renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+    renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; stage.appendChild(renderer.domElement); stage.appendChild(hud);
     scene = new THREE.Scene(); scene.background = new THREE.Color(0x0e1430); scene.fog = new THREE.Fog(0x0e1430, 260, 520);
     scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x24402a, 1.15));
     const sun = new THREE.DirectionalLight(0xffffff, 1.9); sun.position.set(-50, 130, 70); sun.castShadow = true; scene.add(sun);
     const sc = sun.shadow.camera; sc.left = -95; sc.right = 95; sc.top = 70; sc.bottom = -70; sc.near = 20; sc.far = 320; sc.updateProjectionMatrix(); sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005;
+    studioEnv(renderer, scene, 0.7); // glossy reflections on the cars and the ball
     const lam = (o) => new THREE.MeshLambertMaterial(o);
     // pitch
     const S = 8, pitchTex = canvasTex(2 * FL * S, 2 * FW * S, (c, w, h) => {
@@ -150,7 +172,15 @@ export function start(ctx) {
     crowdTex.wrapS = THREE.RepeatWrapping;
     const stand = (w, x, z, ry) => { const t = crowdTex.clone(); t.needsUpdate = true; t.repeat.x = w / 90; const m = new THREE.Mesh(new THREE.PlaneGeometry(w, 30), new THREE.MeshBasicMaterial({ map: t })); m.position.set(x, 10, z); m.rotation.order = 'YXZ'; m.rotation.set(-0.8, ry, 0); scene.add(m); };
     stand(2 * FL + 70, 0, -(FW + 20), 0); stand(2 * FW + 60, -(FL + 26), 0, Math.PI / 2); stand(2 * FW + 60, FL + 26, 0, -Math.PI / 2); stand(2 * FL + 70, 0, FW + 20, Math.PI);
-    for (const sx of [-1, 1]) for (const sz of [-1]) { const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 1, 60, 8), lam({ color: 0x3a4266 })); pole.position.set(sx * (FL + 10), 30, sz * (FW + 40)); scene.add(pole); const l = glow(0xfff6d8, 60, 0.95); l.position.set(sx * (FL + 10), 62, sz * (FW + 40)); scene.add(l); }
+    for (const sx of [-1, 1]) for (const sz of [-1]) {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 1, 60, 8), lam({ color: 0x3a4266 })); pole.position.set(sx * (FL + 10), 30, sz * (FW + 40)); scene.add(pole); const l = glow(0xfff6d8, 60, 0.95); l.position.set(sx * (FL + 10), 62, sz * (FW + 40)); scene.add(l);
+    }
+    // camera flashes twinkling in the crowd
+    for (let k = 0; k < 46; k++) {
+      const side = k % 4, u = rnd(-1, 1), f = glow(0xffffff, rnd(3, 6), 0); const up = rnd(3, 17);
+      if (side === 0) f.position.set(u * (FL + 30), up, -(FW + 12) - up * 0.9); else if (side === 1) f.position.set(-(FL + 16) - up * 0.9, up, u * (FW + 26)); else if (side === 2) f.position.set(FL + 16 + up * 0.9, up, u * (FW + 26)); else f.position.set(u * (FL + 30), up, -(FW + 12) - up * 0.9);
+      scene.add(f); flashes.push({ s: f, t: 0 });
+    }
     // ball
     const ballTex = canvasTex(512, 256, (c, w, h) => { c.fillStyle = '#ffffff'; c.fillRect(0, 0, w, h); c.fillStyle = '#14110f'; for (let r = 0; r < 4; r++) for (let k = 0; k < 8; k++) { const x = (k + (r % 2) * 0.5) * w / 8, y = (r + 0.5) * h / 4; c.beginPath(); for (let a = 0; a < 5; a++) { const an = a * 1.2566 - 1.57; c.lineTo(x + Math.cos(an) * 22 / Math.max(0.45, Math.sin((r + 0.5) / 4 * Math.PI)), y + Math.sin(an) * 22); } c.closePath(); c.fill(); } });
     ball.mesh = new THREE.Mesh(new THREE.SphereGeometry(BALL_R, 32, 24), new THREE.MeshStandardMaterial({ map: ballTex, roughness: 0.35, metalness: 0.05 })); ball.mesh.castShadow = true; scene.add(ball.mesh);
@@ -163,8 +193,8 @@ export function start(ctx) {
     });
     FX = new Particles(scene, 1200);
     cam = new THREE.PerspectiveCamera(28, 1, 1, 900);
-    layout = () => { const w = innerWidth, h = innerHeight, a = w / h, k = Math.max(1, 1.78 / a); renderer.setSize(w, h); cam.aspect = a; cam.position.set(0, 150 * k, 68 * k); cam.lookAt(0, 0, 0.5); cam.updateProjectionMatrix(); FX.mat.uniforms.scale.value = h * renderer.getPixelRatio() * 1.5; };
-    layout(); addEventListener('resize', layout);
+    view = makeView(renderer, scene, cam, { sun, bloom: [0.28, 0.4, 0.94], onResize: (pr) => { const k = Math.max(1, 1.78 / (innerWidth / innerHeight)); cam.position.set(0, 150 * k, 68 * k); cam.lookAt(0, 0, 0.5); FX.mat.uniforms.scale.value = innerHeight * pr * 1.5; } });
+    layout = view.resize; addEventListener('resize', layout);
     big.remove(); newTeams(true); kickoff(); phase = 'kickoff'; wait = 3.999;
     raf = requestAnimationFrame(frame);
   }
@@ -193,10 +223,12 @@ export function start(ctx) {
     }
     const b = ball, sp = Math.hypot(b.vx, b.vz); b.mesh.position.set(b.x, b.y, b.z); b.shadow.position.set(b.x, 0.08, b.z); b.shadow.scale.setScalar(Math.max(0.5, 1 - (b.y - BALL_R) * 0.05));
     if (sp > 0.5) b.mesh.rotateOnWorldAxis(new THREE.Vector3(b.vz / sp, 0, -b.vx / sp), sp * dt / BALL_R);
-    if (sp > 60) FX.emit(b.x, b.y, b.z, rnd(-2, 2), rnd(0, 3), rnd(-2, 2), 0.35, 1.6, white, 0.5, 1);
+    if (sp > 32) FX.emit(b.x, b.y, b.z, rnd(-2, 2), rnd(0, 3), rnd(-2, 2), 0.4, sp > 60 ? 1.9 : 1.1, white, sp > 60 ? 0.55 : 0.28, 1);
+    if (Math.random() < dt * (phase === 'goal' ? 60 : 5)) { const f = flashes[Math.floor(Math.random() * flashes.length)]; if (f) f.t = 1; } // more flashes right after a goal
+    for (const f of flashes) if (f.t > 0) { f.t -= dt * 5; f.s.material.opacity = Math.max(0, f.t); }
     FX.update(dt);
     const tot = Math.max(0, Math.ceil(left)), t = `${Math.floor(tot / 60)}:${String(tot % 60).padStart(2, '0')}`, ce = q('.fb-clock'); if (ce.textContent !== t) { ce.textContent = t; ce.classList.toggle('low', tot <= 10); }
-    renderer.render(scene, cam);
+    view.render(now);
   }
   init();
   window.__fb = { P, ball, tally, step, goal, newTeams, get phase() { return phase; }, setPhase: (p) => { phase = p; }, setLeft: (v) => { left = v; } };
@@ -206,10 +238,10 @@ export function start(ctx) {
       if (phase === 'done') { if (d.a === 'back' && p === ctx.vip()) ctx.end(pointRows); return; }
       const c = P.find((x) => x.p === p); if (!c) return;
       if (d.a === 'joy') { c.jx = clamp(+d.x || 0, -1, 1); c.jz = clamp(+d.y || 0, -1, 1); }
-      if (d.a === 'btn' && d.d && phase === 'play' && c.boostCd <= 0) { c.boostCd = BOOST_CD; c.boostT = 0.9; c.vx += Math.sin(c.h) * 30; c.vz += Math.cos(c.h) * 30; ctx.sfx('jump', 0.6); ctx.to(p.id, { e: 'pad', cd: BOOST_CD }); }
+      if (d.a === 'btn' && d.d) boost(c);
     },
     onLeave(p) { const c = P.find((x) => x.p === p); if (c) c.jx = c.jz = 0; },
     onHostKey() { if (phase === 'done') ctx.end(pointRows); },
-    stop() { stopped = true; cancelAnimationFrame(raf); removeEventListener('resize', layout); if (renderer) { renderer.dispose(); renderer.forceContextLoss?.(); } window.__fb = null; },
+    stop() { stopped = true; cancelAnimationFrame(raf); removeEventListener('resize', layout); if (view) view.dispose(); if (renderer) { renderer.dispose(); renderer.forceContextLoss?.(); } window.__fb = null; },
   };
 }

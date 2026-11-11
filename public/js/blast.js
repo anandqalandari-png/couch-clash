@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { showResults } from './host.js';
 import { nameTag, glow, canvasTex, Particles, clamp, rnd } from './race-world.js';
+import { makeView, studioEnv } from './fx.js';
 
 const WIN_ROUNDS = 3, FUSE = 2.2, FLAME = 0.5, SUDDEN = 75, GHOST_CD = 3.5, RANK_POINTS = [10, 7, 5, 3, 2, 1, 1, 1];
 const CHARS = ['male-a', 'female-a', 'male-b', 'female-b', 'male-c', 'female-c', 'male-d', 'female-d'];
@@ -15,7 +16,7 @@ export function start(ctx) {
   const SPAWNS = [[1, 1], [C - 2, R - 2], [C - 2, 1], [1, R - 2], [(C - 1) / 2, 1], [(C - 1) / 2, R - 2], [1, (R - 1) / 2], [C - 2, (R - 1) / 2]];
   const X = (c) => c - (C - 1) / 2, Z = (r) => r - (R - 1) / 2, PER = 2 * (C - 1) + 2 * (R - 1);
   let grid = [], crates = new Map(), bombs = [], flames = new Map(), pickups = new Map(), fallen = [], spiral = [], spiralT = 0, roundT = 0;
-  let phase = 'loading', stopped = false, raf = 0, last = performance.now(), wait = 0, lastNum = 4, pointRows = [], renderer, scene, cam, FX, layout = () => {}, crateGeo, crateMat, level;
+  let phase = 'loading', stopped = false, raf = 0, last = performance.now(), wait = 0, lastNum = 4, pointRows = [], renderer, scene, cam, FX, view = null, flash = null, layout = () => {}, crateGeo, crateMat, level;
 
   // ---------- HUD ----------
   const hud = document.createElement('div'); hud.className = 'bz';
@@ -27,7 +28,7 @@ export function start(ctx) {
     for (const c of P) { const d = document.createElement('div'); d.className = c.alive ? '' : 'dead'; d.innerHTML = `<i style="background:${c.color}"></i><span></span><b>${'★'.repeat(c.wins)}${'☆'.repeat(WIN_ROUNDS - c.wins)}</b>`; d.children[1].textContent = (c.alive ? '' : '👻 ') + c.name; el.appendChild(d); }
   }
   function banner(html, ms = 2200) { const b = q('.fb-banner'); b.innerHTML = html; b.classList.remove('on'); void b.offsetWidth; b.classList.add('on'); setTimeout(() => b.classList.remove('on'), ms); }
-  const tell = (c) => ctx.to(c.p.id, { e: 'pad', title: c.alive ? '' : 'GHOST', sub: c.alive ? `💣 ${c.maxB}   🔥 ${c.range}   👟 ${Math.round((c.speed - 4.2) / 0.6)}` : 'Run along the wall and throw bombs in' });
+  const tell = (c) => ctx.to(c.p.id, { e: 'pad', title: c.alive ? c.name : '👻 GHOST', sub: c.alive ? `💣 ${c.maxB}   🔥 ${c.range}   👟 ${Math.round((c.speed - 4.2) / 0.6)}` : 'Run along the wall and throw bombs in' });
 
   // ---------- grid helpers ----------
   const key = (c, r) => r * C + c;
@@ -89,6 +90,7 @@ export function start(ctx) {
       for (let e = 0; e < 7; e++) FX.emit(X(c) + rnd(-0.4, 0.4), rnd(0.2, 0.8), Z(r) + rnd(-0.4, 0.4), rnd(-1.5, 1.5), rnd(1.5, 5), rnd(-1.5, 1.5), rnd(0.35, 0.8), rnd(0.25, 0.5), Math.random() < 0.5 ? fire : fire2, 1, 1.2);
     }
     ctx.sfx('break', 0.7); ctx.beep(80, 0.25, 'sawtooth', 0.05); shake = 0.25;
+    if (flash) { flash.position.set(X(b.c), 1.6, Z(b.r)); flash.intensity = 22; } // a burst of warm light on everything nearby
   }
   function breakCrate(c, r) {
     const k = key(c, r), m = crates.get(k); if (m) level.remove(m); crates.delete(k); grid[r][c] = 0;
@@ -101,8 +103,65 @@ export function start(ctx) {
     for (let e = 0; e < 30; e++) FX.emit(X(pl.x) + rnd(-0.3, 0.3), rnd(0.2, 1.2), Z(pl.y) + rnd(-0.3, 0.3), rnd(-4, 4), rnd(2, 8), rnd(-4, 4), rnd(0.5, 1), 0.3, new THREE.Color(pl.color), 1, 0.3, 12);
     let best = 0, bd = 1e9; for (let s = 0; s < PER; s += 0.5) { const q2 = perim(s), d = (q2.x - pl.x) ** 2 + (q2.y - pl.y) ** 2; if (d < bd) { bd = d; best = s; } } pl.s = best; pl.ghostCd = 2;
     pl.node.scale.setScalar(1.4); for (const m of pl.mats) { m.transparent = true; m.opacity = 0.5; m.needsUpdate = true; } play(pl, 'idle');
-    ctx.sfx('fall', 0.8); ctx.to(pl.p.id, { e: 'pad', buzz: [100, 60, 250] }); tell(pl); renderHud();
+    ctx.sfx('fall', 0.8); ctx.to(pl.p.id, { e: 'pad', buzz: [100, 60, 250], toast: by && by !== pl ? `💥 ${by.name} blew you up` : by ? '💥 You blew yourself up' : '🧱 Crushed by the closing walls' }); if (by && by !== pl) ctx.to(by.p.id, { e: 'pad', buzz: 30, good: 1, toast: `🎯 You got ${pl.name}` }); tell(pl); renderHud();
     banner(`<p></p>`, 1600); q('.fb-banner p').textContent = by && by !== pl ? `${by.name} blew up ${pl.name}` : `${pl.name} blew themselves up`;
+  }
+
+  // ---------- bots ----------
+  // Where will fire be, and when? Seconds until each cell burns (Infinity = safe). An extra, not yet placed bomb can be included.
+  function blastCells(c0, r0, range) {
+    const out = [[c0, r0]];
+    for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) for (let k = 1; k <= range; k++) { const c = c0 + dc * k, r = r0 + dr * k, g = grid[r] ? grid[r][c] : 1; if (g === 1 || g === undefined) break; out.push([c, r]); if (g === 2) break; }
+    return out;
+  }
+  function dangerMap(extra) {
+    const D = new Float32Array(C * R).fill(Infinity); for (const k of flames.keys()) D[k] = 0;
+    const list = bombs.map((b) => ({ c: b.c, r: b.r, range: b.range, t: b.t })); if (extra) list.push(extra);
+    for (let pass = 0; pass < 2; pass++) for (const b of list) { b.t = Math.min(b.t, D[key(b.c, b.r)]); for (const [c, r] of blastCells(b.c, b.r, b.range)) { const k = key(c, r); if (b.t < D[k]) D[k] = b.t; } } // second pass catches chain reactions
+    return D;
+  }
+  // Breadth-first walk from a cell. timed = may cross cells that will burn later, as long as the bot is through in time.
+  function walk(pl, c0, r0, D, timed) {
+    const dist = new Int16Array(C * R).fill(-1), prev = new Int16Array(C * R).fill(-1), qu = [key(c0, r0)]; dist[qu[0]] = 0;
+    for (let h = 0; h < qu.length; h++) {
+      const k = qu[h], c = k % C, r = (k - c) / C;
+      for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nc = c + dc, nr = r + dr, nk = key(nc, nr); if (nc < 1 || nr < 1 || nc >= C - 1 || nr >= R - 1 || dist[nk] >= 0 || grid[nr][nc] !== 0 || bombAt(nc, nr)) continue;
+        const arrive = (dist[k] + 1) / pl.speed; if (timed ? D[nk] < arrive + 0.45 : D[nk] !== Infinity) continue;
+        dist[nk] = dist[k] + 1; prev[nk] = k; qu.push(nk);
+      }
+    }
+    return { dist, prev, cells: qu };
+  }
+  function botThink(pl, dt) {
+    const ai = pl.ai || (pl.ai = { t: Math.random() * 0.3, lazy: rnd(0.1, 0.35) }); ai.t -= dt; if (ai.t > 0) return; ai.t = rnd(0.07, 0.13);
+    const others = P.filter((o) => o !== pl && o.alive);
+    if (!pl.alive) { // ghost: slide along the wall towards the nearest survivor and lob a bomb in
+      const tgt = others.sort((a, b) => Math.hypot(a.x - pl.x, a.y - pl.y) - Math.hypot(b.x - pl.x, b.y - pl.y))[0]; if (!tgt) { pl.jx = pl.jy = 0; return; }
+      let bs = 0, bd = 1e9; for (let q2 = 0; q2 < PER; q2++) { const g = perim(q2), d = (g.x - tgt.x) ** 2 + (g.y - tgt.y) ** 2; if (d < bd) { bd = d; bs = q2; } }
+      let df = ((bs - pl.s) % PER + PER) % PER; if (df > PER / 2) df -= PER; const g = perim(pl.s);
+      if (Math.abs(df) < 0.6) { pl.jx = pl.jy = 0; if (pl.ghostCd <= 0 && bd < 12) dropBomb(pl); } else { pl.jx = g.tx * Math.sign(df); pl.jy = g.ty * Math.sign(df); }
+      return;
+    }
+    const c0 = Math.round(pl.x), r0 = Math.round(pl.y), here = key(c0, r0), D = dangerMap(); let goal = here, path;
+    if (D[here] !== Infinity) { // standing where fire is coming: get to the nearest safe cell
+      path = walk(pl, c0, r0, D, true); let bd = 1e9; for (const k of path.cells) if (D[k] === Infinity && path.dist[k] < bd) { bd = path.dist[k]; goal = k; }
+    } else {
+      path = walk(pl, c0, r0, D, false); let bs = -1e9;
+      for (const k of path.cells) {
+        const c = k % C, r = (k - c) / C, cells = blastCells(c, r, pl.range); let v = 0, near = 99;
+        for (const [bc, br] of cells) { if (grid[br][bc] === 2) v += 1.6; for (const o of others) if (Math.round(o.x) === bc && Math.round(o.y) === br) v += 3; }
+        if (pickups.has(k)) v += 5; for (const o of others) near = Math.min(near, Math.abs(o.x - c) + Math.abs(o.y - r));
+        const sc = v * 2 - path.dist[k] * 0.55 - near * 0.12 + (k === ai.last ? 0.4 : 0); if (sc > bs) { bs = sc; goal = k; ai.want = v > 0 && !pickups.has(k); }
+      }
+      ai.last = goal;
+      if (goal === here && ai.want && pl.active < pl.maxB && !bombAt(c0, r0) && Math.random() > ai.lazy) { // worth a bomb here, but only with a way out
+        const D2 = dangerMap({ c: c0, r: r0, range: pl.range, t: FUSE }), esc2 = walk(pl, c0, r0, D2, true); if (esc2.cells.some((k) => D2[k] === Infinity)) dropBomb(pl);
+      }
+    }
+    let k = goal; while (k !== here && path.prev[k] !== here && path.prev[k] >= 0) k = path.prev[k]; // first step of the route
+    const nc = k % C, nr = (k - nc) / C, ox = nc - pl.x, oy = nr - pl.y;
+    if (Math.abs(ox) < 0.06 && Math.abs(oy) < 0.06) pl.jx = pl.jy = 0; else if (Math.abs(ox) > Math.abs(oy)) { pl.jx = Math.sign(ox); pl.jy = 0; } else { pl.jx = 0; pl.jy = Math.sign(oy); }
   }
 
   // ---------- movement ----------
@@ -120,6 +179,7 @@ export function start(ctx) {
   function step(dt) {
     roundT += dt;
     for (const pl of P) {
+      if (pl.p.bot && phase === 'play') botThink(pl, dt);
       const m = Math.hypot(pl.jx, pl.jy);
       if (pl.alive) {
         if (m > 0.3) { const h = Math.abs(pl.jx) > Math.abs(pl.jy), dx = h ? Math.sign(pl.jx) : 0, dy = h ? 0 : Math.sign(pl.jy); move(pl, dx, dy, pl.speed * dt); pl.face = Math.atan2(dx, dy); play(pl, 'walk'); } else play(pl, 'idle');
@@ -165,22 +225,34 @@ export function start(ctx) {
   let shake = 0, blockGeo, blockMat2; const pickTex = {};
   async function init() {
     stage.appendChild(big);
-    for (const c of P) ctx.to(c.p.id, { m: 'pad', btn: 'BOMB', color: c.color, title: 'Loading…', sub: '', four: 1 });
+    for (const c of P) ctx.to(c.p.id, { m: 'pad', btn: 'BOMB', icon: '💣', color: c.color, title: 'Loading…', sub: '', four: 1, how: ['How to play Blast Zone', ['🕹️', 'Drag the left side to walk: up, down, left, right'], ['💣', 'Drop a bomb, then get out of its row and column'], ['📦', 'Blow up crates for pickups: more bombs, bigger blasts, speed'], ['👻', 'Knocked out? You become a ghost on the wall and throw bombs in']] });
     const loader = new GLTFLoader(), safe = (u) => loader.loadAsync(u).catch(() => null);
-    const [brick, ...chars] = await Promise.all([safe('/assets/blocks/brick.glb'), ...P.map((pl, i) => safe(`/assets/chars/character-${CHARS[i % CHARS.length]}.glb`))]);
+    const DECOR = ['tree_pineRoundA', 'tree_pineDefaultA', 'rock_largeA', 'plant_bushDetailed', 'rock_tallA', 'tree_pineTallA_detailed'];
+    const [brick, decor, ...chars] = await Promise.all([safe('/assets/blocks/brick.glb'), Promise.all(DECOR.map((d) => safe(`/assets/props/${d}.glb`))), ...P.map((pl, i) => safe(`/assets/chars/character-${CHARS[i % CHARS.length]}.glb`))]);
     if (stopped) return;
-    renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' }); renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+    renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; stage.appendChild(renderer.domElement); stage.appendChild(hud);
-    scene = new THREE.Scene(); scene.background = new THREE.Color(0x1c2a4a); level = new THREE.Group(); scene.add(level);
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x4a6a8a, 1.25));
-    const sun = new THREE.DirectionalLight(0xfff2dc, 2.0); sun.position.set(-7, 18, 9); sun.castShadow = true; scene.add(sun);
+    scene = new THREE.Scene(); level = new THREE.Group(); scene.add(level);
+    scene.background = canvasTex(512, 512, (c, w, h) => { const g = c.createRadialGradient(w / 2, h * 0.42, 20, w / 2, h * 0.5, w * 0.75); g.addColorStop(0, '#3c5fa8'); g.addColorStop(0.55, '#22335f'); g.addColorStop(1, '#0d1226'); c.fillStyle = g; c.fillRect(0, 0, w, h); c.fillStyle = 'rgba(255,255,255,.5)'; for (let k = 0; k < 90; k++) { c.globalAlpha = Math.random() * 0.6; c.fillRect(Math.random() * w, Math.random() * h, 1.6, 1.6); } });
+    studioEnv(renderer, scene, 0.22); flash = new THREE.PointLight(0xffa040, 0, 9, 1.6); scene.add(flash);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x4a6a8a, 1.05));
+    const sun = new THREE.DirectionalLight(0xfff2dc, 1.75); sun.position.set(-7, 18, 9); sun.castShadow = true; scene.add(sun);
     const sc = sun.shadow.camera; sc.left = -14; sc.right = 14; sc.top = 10; sc.bottom = -10; sc.near = 2; sc.far = 50; sc.updateProjectionMatrix(); sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0006;
     const lam = (o) => new THREE.MeshLambertMaterial(o);
     // floor
     const floorTex = canvasTex(C * 48, R * 48, (c) => { for (let r = 0; r < R; r++) for (let x = 0; x < C; x++) { c.fillStyle = (r + x) % 2 ? '#6fc267' : '#7dcf73'; c.fillRect(x * 48, r * 48, 48, 48); c.fillStyle = 'rgba(0,0,0,.05)'; c.fillRect(x * 48, r * 48 + 44, 48, 4); } });
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(C, R), lam({ map: floorTex })); floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
     const table = new THREE.Mesh(new THREE.BoxGeometry(C + 1.2, 1.2, R + 1.2), lam({ color: 0x24375f })); table.position.y = -0.62; table.receiveShadow = true; scene.add(table);
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), lam({ color: 0x17233f })); ground.rotation.x = -Math.PI / 2; ground.position.y = -1.2; scene.add(ground);
+    // a grassy island under the arena, with trees and rocks from the nature kit around the edge
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(Math.hypot(C, R) * 0.5 + 5.5, 48), lam({ color: 0x3d8f52 })); ground.rotation.x = -Math.PI / 2; ground.position.y = -1.2; ground.receiveShadow = true; scene.add(ground);
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(Math.hypot(C, R) * 0.5 + 5.5, Math.hypot(C, R) * 0.5 + 3.5, 2.4, 48, 1, true), lam({ color: 0x7a5a3c })); rim.position.y = -2.4; scene.add(rim);
+    const tint = [[/leaf/i, 0x2f9e4a], [/wood/i, 0x8a5a34], [/stone|default/i, 0x8f9bb0], [/dirt/i, 0x7a5a3c], [/grass/i, 0x4aa85a]]; // the kit's own colours are teal and salmon, which looks odd next to the arena
+    for (const d of decor) if (d) d.scene.traverse((o) => { if (o.isMesh) for (const m of [].concat(o.material)) { const t = tint.find(([re]) => re.test(m.name)); if (t) m.color.set(t[1]); } });
+    const ok = decor.map((d, i) => { if (!d) return null; const box = new THREE.Box3().setFromObject(d.scene), hgt = box.max.y - box.min.y || 1; return { src: d.scene, k: (/tree/.test(DECOR[i]) ? rnd(2.6, 3.2) : /rock_tall/.test(DECOR[i]) ? 1.8 : 1.0) / hgt }; }).filter(Boolean);
+    if (ok.length) for (let k = 0; k < 30; k++) {
+      const a = (k / 30) * Math.PI * 2 + rnd(-0.08, 0.08), rx = C / 2 + rnd(1.4, 3.4), rz = R / 2 + rnd(1.4, 3.2), d = ok[Math.floor(Math.random() * ok.length)], m = d.src.clone(true);
+      m.position.set(Math.cos(a) * rx * 1.12, -1.2, Math.sin(a) * rz * 1.25); m.scale.setScalar(d.k * rnd(0.85, 1.15)); m.rotation.y = rnd(0, 6.28); m.traverse((o) => { if (o.isMesh) o.castShadow = true; }); scene.add(m);
+    }
     // fixed blocks (outer wall and pillars)
     const stoneTex = canvasTex(64, 64, (c) => { c.fillStyle = '#7d8aa6'; c.fillRect(0, 0, 64, 64); c.fillStyle = '#93a0bb'; c.fillRect(4, 4, 56, 52); c.fillStyle = '#6b7791'; c.fillRect(4, 52, 56, 8); c.fillStyle = 'rgba(255,255,255,.25)'; c.fillRect(8, 8, 48, 6); });
     blockGeo = new THREE.BoxGeometry(1, 1, 1); const blockMat = lam({ map: stoneTex }); blockMat2 = lam({ map: stoneTex, color: 0xff9a8a });
@@ -204,8 +276,8 @@ export function start(ctx) {
     });
     FX = new Particles(scene, 1200);
     cam = new THREE.PerspectiveCamera(34, 1, 0.5, 200);
-    layout = () => { const w = innerWidth, h = innerHeight, a = w / h, k = Math.max(1, (C + 5.5) / (11.7 * a)); renderer.setSize(w, h); cam.aspect = a; cam.position.set(0, 17.6 * k, 7.9 * k); cam.lookAt(0, 0, 0.25); cam.updateProjectionMatrix(); FX.mat.uniforms.scale.value = h * renderer.getPixelRatio() * 1.6; };
-    layout(); addEventListener('resize', layout);
+    view = makeView(renderer, scene, cam, { sun, bloom: [0.3, 0.45, 0.985], onResize: (pr) => { const k = Math.max(1, (C + 5.5) / (11.7 * (innerWidth / innerHeight))); cam.position.set(0, 17.6 * k, 7.9 * k); cam.lookAt(0, 0, 0.25); FX.mat.uniforms.scale.value = innerHeight * pr * 1.6; } });
+    layout = view.resize; addEventListener('resize', layout);
     big.remove(); newRound(); raf = requestAnimationFrame(frame);
   }
   function finish() {
@@ -229,7 +301,8 @@ export function start(ctx) {
     FX.update(dt);
     const tl = Math.max(0, Math.ceil(SUDDEN - roundT)), ce = q('.bz-clock'), txt = phase === 'play' || phase === 'roundEnd' ? (tl > 0 ? `${Math.floor(tl / 60)}:${String(tl % 60).padStart(2, '0')}` : 'SUDDEN DEATH') : ''; if (ce.textContent !== txt) { ce.textContent = txt; ce.classList.toggle('low', tl <= 10); }
     if (shake > 0) { shake -= dt; cam.position.x = rnd(-0.08, 0.08); } else cam.position.x = 0;
-    renderer.render(scene, cam);
+    if (flash.intensity > 0.05) flash.intensity *= Math.exp(-9 * dt); else flash.intensity = 0;
+    view.render(now);
   }
   init();
   window.__bz = { P, step, dropBomb, move, kill, get grid() { return grid; }, get bombs() { return bombs; }, get flames() { return flames; }, get pickups() { return pickups; }, get phase() { return phase; }, setPhase: (p) => { phase = p; }, setRoundT: (v) => { roundT = v; }, C, R };
@@ -243,6 +316,6 @@ export function start(ctx) {
     },
     onLeave(p) { const pl = P.find((x) => x.p === p); if (pl) pl.jx = pl.jy = 0; },
     onHostKey() { if (phase === 'done') ctx.end(pointRows); },
-    stop() { stopped = true; cancelAnimationFrame(raf); removeEventListener('resize', layout); if (renderer) { renderer.dispose(); renderer.forceContextLoss?.(); } window.__bz = null; },
+    stop() { stopped = true; cancelAnimationFrame(raf); removeEventListener('resize', layout); if (view) view.dispose(); if (renderer) { renderer.dispose(); renderer.forceContextLoss?.(); } window.__bz = null; },
   };
 }

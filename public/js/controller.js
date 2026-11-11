@@ -11,7 +11,7 @@
   const buzz = (p) => { try { navigator.vibrate && navigator.vibrate(p); } catch {} };
   const el = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstChild; };
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  function screen(cls, html) { if (cleanup) { try { cleanup(); } catch {} cleanup = null; } document.body.className = cls || ''; app.innerHTML = html; return app; }
+  function screen(cls, html) { if (cleanup) { try { cleanup(); } catch {} cleanup = null; } document.body.className = (cls || '') + (isVip ? ' vip' : ''); app.innerHTML = html; return app; }
   // a button that reacts instantly to touch and supports several fingers at once
   function hold(node, onDown, onUp) {
     const down = (e) => { e.preventDefault(); node.classList.add('on'); try { node.setPointerCapture(e.pointerId); } catch {} onDown && onDown(e); };
@@ -45,7 +45,7 @@
     mode = d.m; evt = null;
     if (d.color) document.documentElement.style.setProperty('--me', d.color);
     quitBtn.hidden = !(isVip && !['lobby', 'done'].includes(d.m));
-    ({ lobby: showLobby, wait: showWait, pick: showPick, race: showRace, done: showDone, sk_choose: showChoose, sk_draw: showDraw, turf: showTurf, pad: showPad, pl_write: showWrite, pl_vote: showVote }[d.m] || showWait)(d);
+    ({ lobby: showLobby, wait: showWait, pick: showPick, race: showRace, done: showDone, sk_choose: showChoose, sk_draw: showDraw, turf: showTurf, pad: showPad, pl_write: showWrite, pl_vote: showVote, pl_react: showReact, choice: showChoice, sz_guess: showSize }[d.m] || showWait)(d);
   }
 
   // ---------- join ----------
@@ -65,20 +65,44 @@
     app.querySelector('#cd').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
   }
 
+  // ---------- small shared pieces ----------
+  const seenHow = new Set();
+  // a short "how to play" card, shown the first time each controller appears; any touch closes it
+  function howto(root, key, title, rows) {
+    if (seenHow.has(key)) return; seenHow.add(key);
+    const h = el(`<div class="how"><div class="card"><h3>${esc(title)}</h3>${rows.map(([i, t]) => `<div class="hr"><b>${i}</b><span>${esc(t)}</span></div>`).join('')}<em>Tap to start</em></div></div>`);
+    const close = () => h.remove(); h.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); close(); }); setTimeout(close, 8000); root.appendChild(h);
+  }
+  let toastT = 0;
+  function toast(root, html, cls) {
+    let t = root.querySelector('.ptoast'); if (!t) { t = el('<div class="ptoast"></div>'); root.appendChild(t); }
+    t.className = 'ptoast on ' + (cls || ''); t.innerHTML = html; clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2400);
+  }
+  const fmtSize = (m) => { const f = (x) => (x >= 100 ? Math.round(x).toLocaleString('en') : String(+x.toPrecision(x >= 10 ? 3 : 2))); return m >= 1000 ? f(m / 1000) + ' km' : m >= 1 ? f(m) + ' m' : f(m * 100) + ' cm'; };
+
   // ---------- lobby / wait / done ----------
   function scoreList(s) { return s && s.length ? `<ul class="scores">${s.map((x) => `<li><i style="background:${x.color}"></i>${esc(x.name)}<b>${x.score}</b></li>`).join('')}</ul>` : ''; }
   function showLobby(d) {
     screen('', `<div class="me"><i></i>${esc(d.name)}</div>
       <h2 style="margin:16px 0 6px">${d.vip ? 'Pick a game' : 'Lobby'}</h2>
-      ${d.vip ? `<p>You joined first, so you are the host.</p><div class="stack" style="margin-top:14px">${d.games.map((g) => `<button class="btn g-${esc(g.c || '')}" data-k="${g.k}">${esc(g.name)}<small>${esc(g.desc)}</small></button>`).join('')}</div>`
+      ${d.vip ? `<p>You joined first, so you are the host.</p>
+        <div class="botrow"><div><b>Bots</b><small>${d.bots ? 'Join every game marked 🤖' : 'Add computer players'}</small></div><button class="arrow" id="bm">−</button><b id="bn">${d.bots || 0}</b><button class="arrow" id="bp">+</button></div>
+        <div class="stack" style="margin-top:14px">${d.games.map((g) => `<button class="btn g-${esc(g.c || '')}" data-k="${g.k}">${esc(g.name)}<small>${esc(g.desc)}${g.bots && d.bots ? ' · 🤖 +' + d.bots : ''}</small></button>`).join('')}</div>`
         : '<p>Waiting for the host to pick a game.</p>'}
       <div class="grow"></div><label>Scores</label>${scoreList(d.scores)}`);
     app.querySelectorAll('[data-k]').forEach((b) => (b.onclick = () => send({ a: 'menu', game: b.dataset.k })));
+    const on = (s, f) => { const b = app.querySelector(s); if (b) b.onclick = f; };
+    on('#bm', () => send({ a: 'bots', n: Math.max(0, (d.bots || 0) - 1) })); on('#bp', () => send({ a: 'bots', n: Math.min(d.maxBots || 3, (d.bots || 0) + 1) }));
   }
   function showWait(d) { screen('', `<div class="center"><h2>${esc(d.title || '')}</h2><p>${esc(d.text || '')}</p></div>`); }
   function showDone(d) {
     screen('', `<div class="center"><h2>${esc(d.title || 'Done')}</h2><p>${esc(d.text || '')}</p></div>${d.vip ? '<button class="btn" id="bk">BACK TO LOBBY</button>' : '<p style="text-align:center;opacity:.6">Waiting for the host…</p>'}`);
     const b = app.querySelector('#bk'); if (b) b.onclick = () => send({ a: 'back' });
+  }
+  // a plain list of choices (used for picking a pack in Size Up)
+  function showChoice(d) {
+    screen('', `<h2>${esc(d.title || 'Choose')}</h2><p style="margin:8px 0 16px">${esc(d.text || '')}</p><div class="stack">${d.opts.map((o, i) => `<button class="btn ch${i % 5}" data-k="${esc(o.k)}">${esc(o.label)}<small>${esc(o.sub || '')}</small></button>`).join('')}</div>`);
+    app.querySelectorAll('[data-k]').forEach((b) => (b.onclick = () => { send({ a: 'pick', k: b.dataset.k }); buzz(20); }));
   }
 
   // ---------- race: car + track picker ----------
@@ -109,50 +133,71 @@
     const a = (window.screen.orientation && window.screen.orientation.angle != null) ? window.screen.orientation.angle : (window.orientation || 0);
     rawTilt = a === 90 ? e.beta : (a === 270 || a === -90) ? -e.beta : e.gamma;
   });
+  const WHEEL = '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="none" stroke="currentColor" stroke-width="10"/><path d="M50 50L13 40M50 50L87 40M50 50V89" stroke="currentColor" stroke-width="9" stroke-linecap="round"/><circle cx="50" cy="50" r="11" fill="currentColor"/></svg>';
   function showRace(d) {
-    let useTilt = store.get('cc_tilt') !== '0', flip = store.get('cc_flip') === '1', gas = false, brake = false, L = false, R = false, ready = false, lastSent = '', lastT = 0;
-    const root = screen('race', `<div class="rc"><div class="left"></div>
-        <div class="mid"><div class="tilt"><i></i></div><button class="pw"><span>${esc(d.power)}<small>CHARGING</small></span></button><button class="it"><span><b>ITEM</b><small>HIT A ? BOX</small></span></button>
-        <div class="opts"><button id="mt"></button><button id="fl">Flip</button></div></div><div class="right"></div></div>
+    let useTilt = store.get('cc_tilt') !== '0', flip = store.get('cc_flip') === '1', gas = false, brake = false, L = false, R = false, ready = false, hasItem = false, lastSent = '', lastT = 0;
+    const root = screen('ctl race', `<div class="rc">
+        <button class="rb pw"><i>⚡</i><b>${esc(d.power)}</b><small>CHARGING</small><u></u></button>
+        <button class="rb it"><i>?</i><b>ITEM</b><small>DRIVE INTO A ? BOX</small></button>
+        <button class="rb brake"><b>BRAKE</b></button>
+        <button class="rb sl"><b>◀</b></button><button class="rb sr"><b>▶</b></button>
+        <div class="mid"><div class="wheel">${WHEEL}</div><div class="mode"></div><button class="cfg">Controls</button></div>
+        <button class="rb gas"><b>GAS</b><small>HOLD</small></button>
+      </div>
+      <div class="sheet" hidden><div class="card"><h3>Steering</h3>
+        <button class="opt" data-o="tilt"><b>Tilt the phone</b><small>Hold it like a steering wheel</small></button>
+        <button class="opt" data-o="btns"><b>Arrow buttons</b><small>Left thumb steers</small></button>
+        <button class="opt" data-o="flip"><b>Flip tilt direction</b><small>If the car turns the wrong way</small></button>
+        <button class="btn" data-o="done">DONE</button></div></div>
       <div class="rotate"><div><div class="ph">📱</div><h2>Turn your phone sideways</h2><p style="margin-top:10px">Hold it like a steering wheel.</p></div></div>`);
-    const left = root.querySelector('.left'), right = root.querySelector('.right'), pw = root.querySelector('.pw'), dot = root.querySelector('.tilt i'), mt = root.querySelector('#mt');
+    const rc = root.querySelector('.rc'), pw = root.querySelector('.pw'), it = root.querySelector('.it'), wheel = root.querySelector('.wheel'), modeEl = root.querySelector('.mode'), sheet = root.querySelector('.sheet');
     function build() {
-      mt.textContent = useTilt ? 'Use buttons' : 'Use tilt'; root.querySelector('#fl').style.display = useTilt ? '' : 'none';
-      left.className = 'left' + (useTilt ? '' : ' btns'); right.className = 'right' + (useTilt ? '' : ' btns');
-      left.innerHTML = useTilt ? '<button class="pad brake">BRAKE</button>' : '<button class="pad brake" id="sl">◀</button><button class="pad brake" id="sr">▶</button>';
-      right.innerHTML = useTilt ? '<button class="pad gas">GAS</button>' : '<button class="pad brake" id="bk">BRAKE</button><button class="pad gas">GAS</button>';
-      gas = brake = L = R = false;
-      hold(right.querySelector('.gas'), () => { gas = true; }, () => { gas = false; });
-      if (useTilt) hold(left.querySelector('.brake'), () => { brake = true; }, () => { brake = false; });
-      else { hold(left.querySelector('#sl'), () => { L = true; }, () => { L = false; }); hold(left.querySelector('#sr'), () => { R = true; }, () => { R = false; }); hold(right.querySelector('#bk'), () => { brake = true; }, () => { brake = false; }); }
+      rc.classList.toggle('tilt', useTilt); rc.classList.toggle('btns', !useTilt); gas = brake = L = R = false;
+      modeEl.textContent = useTilt ? 'TILT TO STEER' : 'ARROWS STEER';
+      sheet.querySelector('[data-o=tilt]').classList.toggle('on', useTilt); sheet.querySelector('[data-o=btns]').classList.toggle('on', !useTilt);
+      sheet.querySelector('[data-o=flip]').classList.toggle('on', flip); sheet.querySelector('[data-o=flip]').style.display = useTilt ? '' : 'none';
     }
-    build();
-    mt.onclick = () => { useTilt = !useTilt; store.set('cc_tilt', useTilt ? '1' : '0'); if (useTilt) askMotion(); build(); };
-    root.querySelector('#fl').onclick = () => { flip = !flip; store.set('cc_flip', flip ? '1' : '0'); };
+    hold(root.querySelector('.gas'), () => { gas = true; }, () => { gas = false; });
+    hold(root.querySelector('.brake'), () => { brake = true; }, () => { brake = false; });
+    hold(root.querySelector('.sl'), () => { L = true; }, () => { L = false; }); hold(root.querySelector('.sr'), () => { R = true; }, () => { R = false; });
     hold(pw, () => { if (ready) { send({ a: 'pw' }); buzz(40); } });
-    const it = root.querySelector('.it'); let hasItem = false;
     hold(it, () => { if (hasItem) { send({ a: 'it' }); buzz(40); } });
-    const setReady = (r) => { ready = r; pw.classList.toggle('ready', r); pw.querySelector('small').textContent = r ? 'TAP TO USE' : 'CHARGING'; if (r) buzz(25); };
-    evt = (m) => {
-      if (m.e === 'pw') setReady(!!m.ready); if (m.e === 'hit') buzz([60, 40, 120]);
-      if (m.e === 'item') { hasItem = !!m.k; it.classList.toggle('ready', hasItem); it.querySelector('b').textContent = hasItem ? m.icon + ' ' + m.name : 'ITEM'; it.querySelector('small').textContent = hasItem ? 'TAP TO USE' : 'HIT A ? BOX'; if (hasItem) buzz(25); }
+    root.querySelector('.cfg').onclick = () => { sheet.hidden = false; };
+    sheet.querySelectorAll('[data-o]').forEach((b) => (b.onclick = () => {
+      const o = b.dataset.o;
+      if (o === 'tilt') { useTilt = true; store.set('cc_tilt', '1'); askMotion(); } else if (o === 'btns') { useTilt = false; store.set('cc_tilt', '0'); }
+      else if (o === 'flip') { flip = !flip; store.set('cc_flip', flip ? '1' : '0'); } else sheet.hidden = true;
+      build();
+    }));
+    build();
+    const setReady = (r, cd) => {
+      ready = r; pw.classList.toggle('ready', r); pw.querySelector('small').textContent = r ? 'TAP TO USE' : 'CHARGING'; const bar = pw.querySelector('u');
+      bar.style.animation = 'none'; if (!r && cd) { void bar.offsetWidth; bar.style.animation = `fillup ${cd}s linear forwards`; } if (r) buzz(25);
     };
-    // iOS: tilt needs an explicit permission tap
-    if (useTilt && !motionAsked && window.DeviceOrientationEvent && typeof window.DeviceOrientationEvent.requestPermission === 'function') {
-      const g = el('<div class="gate"><div><h2 style="color:#ffc62b">Tilt steering</h2><p style="margin:12px 0 18px">Tap once so your phone can share its tilt.</p><button class="btn">ENABLE TILT</button></div></div>');
-      g.querySelector('button').onclick = () => { askMotion(); g.remove(); }; root.appendChild(g);
-    } else askMotion();
+    evt = (m) => {
+      if (m.e === 'pw') setReady(!!m.ready, m.cd);
+      if (m.e === 'hit') { buzz([60, 40, 120]); if (m.text) toast(root, `<b>${esc(m.icon || '💥')}</b> ${esc(m.text)}`, 'bad'); root.classList.remove('shake'); void root.offsetWidth; root.classList.add('shake'); }
+      if (m.e === 'got') { buzz(30); toast(root, `<b>${esc(m.icon || '🎯')}</b> ${esc(m.text)}`, 'good'); }
+      if (m.e === 'item') { hasItem = !!m.k; it.classList.toggle('ready', hasItem); it.querySelector('i').textContent = hasItem ? m.icon : '?'; it.querySelector('b').textContent = hasItem ? m.name : 'ITEM'; it.querySelector('small').textContent = hasItem ? 'TAP TO USE' : 'DRIVE INTO A ? BOX'; if (hasItem) buzz(25); }
+    };
+    const HOW = [['🏎️', 'Steer, and hold GAS'], ['?', 'Drive into ? boxes, then tap ITEM'], ['⚡', 'Your car power recharges. Tap it when it glows']];
+    // phones that need a tap before sharing tilt get one card that covers both the choice and the how-to
+    if (useTilt && !(motionAsked && motionOK) && window.DeviceOrientationEvent && typeof window.DeviceOrientationEvent.requestPermission === 'function') {
+      seenHow.add('race');
+      const g = el(`<div class="gate"><div class="card"><h3>How do you want to steer?</h3>${HOW.slice(1).map(([i, t]) => `<div class="hr"><b>${i}</b><span>${esc(t)}</span></div>`).join('')}<button class="btn">TILT THE PHONE</button><button class="btn ghost">ARROW BUTTONS</button></div></div>`);
+      const bs = g.querySelectorAll('button'); bs[0].onclick = () => { askMotion(); g.remove(); }; bs[1].onclick = () => { useTilt = false; store.set('cc_tilt', '0'); build(); g.remove(); }; root.appendChild(g);
+    } else { askMotion(); howto(root, 'race', 'How to drive', [[HOW[0][0], useTilt ? 'Tilt the phone to steer, hold GAS' : 'Arrows steer, hold GAS'], HOW[1], HOW[2]]); }
     let steerS = 0;
     const iv = setInterval(() => {
       let s;
       if (useTilt) { let t = clamp(rawTilt / 26, -1, 1) * (flip ? -1 : 1); if (Math.abs(t) < 0.07) t = 0; steerS += (t - steerS) * 0.55; s = steerS; }
-      else s = (R ? 1 : 0) - (L ? 1 : 0);
-      dot.style.left = 50 + s * 44 + '%';
+      else { const t = (R ? 1 : 0) - (L ? 1 : 0); steerS += (t - steerS) * 0.5; s = t; }
+      wheel.style.transform = `rotate(${steerS * 75}deg)`;
       const msg = { a: 'in', s: Math.round(s * 100) / 100, g: gas ? 1 : 0, b: brake ? 1 : 0 }, key = msg.s + '|' + msg.g + '|' + msg.b, now = Date.now();
       if (key !== lastSent || now - lastT > 400) { send(msg); lastSent = key; lastT = now; }
     }, 40);
     // if no tilt data shows up, fall back to buttons so nobody is stuck
-    const fb = setTimeout(() => { if (useTilt && !tiltSeen && motionAsked) { useTilt = false; build(); } }, 3500);
+    const fb = setTimeout(() => { if (useTilt && !tiltSeen && motionAsked) { useTilt = false; build(); toast(root, 'No tilt sensor found. Using arrow buttons', ''); } }, 3500);
     cleanup = () => { clearInterval(iv); clearTimeout(fb); };
   }
 
@@ -198,58 +243,147 @@
     cleanup = () => { clearInterval(fl); clearInterval(tk); };
   }
 
+  // ---------- shared thumb stick: the base appears where the thumb lands, and follows it ----------
+  function stick(zone, base, R, onMove, onEnd) {
+    const knob = base.querySelector('.knob'); let ox = 0, oy = 0, active = null;
+    const home = () => { base.style.left = ''; base.style.top = ''; base.classList.remove('live'); knob.style.transform = ''; };
+    const setBase = () => { const r = zone.getBoundingClientRect(); base.style.left = ox - r.left + 'px'; base.style.top = oy - r.top + 'px'; };
+    zone.addEventListener('pointerdown', (e) => { e.preventDefault(); if (active !== null) return; active = e.pointerId; ox = e.clientX; oy = e.clientY; base.classList.add('live'); setBase(); try { zone.setPointerCapture(e.pointerId); } catch {} });
+    zone.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== active) return; let dx = e.clientX - ox, dy = e.clientY - oy; const m = Math.hypot(dx, dy);
+      if (m > R) { ox += dx - dx * R / m; oy += dy - dy * R / m; dx *= R / m; dy *= R / m; setBase(); } // the centre follows the thumb, so reversing is instant
+      knob.style.transform = `translate(${dx}px,${dy}px)`; onMove(dx / R, dy / R, m);
+    });
+    const up = (e) => { if (e.pointerId !== active) return; active = null; home(); onEnd && onEnd(); };
+    zone.addEventListener('pointerup', up); zone.addEventListener('pointercancel', up);
+    return { get active() { return active !== null; } };
+  }
+  const STICK = '<div class="base"><span class="ar u">▲</span><span class="ar r">▶</span><span class="ar d">▼</span><span class="ar l">◀</span><i class="knob"></i></div>';
+
   // ---------- turf ----------
   function showTurf(d) {
-    const root = screen('turf', `<div class="tfc"><div class="hint">Your land</div><div class="pct">0%</div><div class="stick"><i></i><b></b></div><div class="hint st">Drag anywhere, any direction</div></div>`);
-    const pad = root.querySelector('.tfc'), knob = root.querySelector('.stick i'), arrow = root.querySelector('.stick b'), pct = root.querySelector('.pct'), st = root.querySelector('.st');
-    let ox = 0, oy = 0, active = null, lastAng = 99, lastT = 0;
-    arrow.textContent = '▲'; arrow.style.opacity = '0';
-    const move = (e) => {
-      const dx = e.clientX - ox, dy = e.clientY - oy, m = Math.hypot(dx, dy), k = m > 60 ? 60 / m : 1;
-      knob.style.transform = `translate(${dx * k}px,${dy * k}px)`;
-      if (m > 60) { ox += dx - dx * k; oy += dy - dy * k; } // origin follows the thumb so turning back is quick
-      if (m < 14) return;
-      const ang = Math.atan2(dy, dx), now = Date.now(); let df = ang - lastAng; df = Math.abs(Math.atan2(Math.sin(df), Math.cos(df)));
-      arrow.style.opacity = '1'; arrow.style.transform = `rotate(${ang + Math.PI / 2}rad)`;
+    const root = screen('ctl turf', `<div class="tfc"><div class="bar"><div class="who"><i></i>YOUR LAND</div><b class="pct">0%</b></div><div class="zone">${STICK}<div class="tip">Drag anywhere to steer</div></div><div class="st">Leave your colour, loop back to claim the land inside</div></div>`);
+    const zone = root.querySelector('.zone'), base = root.querySelector('.base'), pct = root.querySelector('.pct'), st = root.querySelector('.st'), tip = root.querySelector('.tip');
+    let lastAng = 99, lastT = 0; const idle = st.textContent;
+    const sk = stick(zone, base, 60, (x, y, m) => {
+      if (m < 14) return; tip.style.opacity = '0';
+      const ang = Math.atan2(y, x), now = Date.now(); let df = ang - lastAng; df = Math.abs(Math.atan2(Math.sin(df), Math.cos(df)));
       if ((df > 0.04 && now - lastT > 33) || now - lastT > 250) { lastAng = ang; lastT = now; send({ a: 'ang', r: Math.round(ang * 100) / 100 }); }
-    };
-    const beat = setInterval(() => { if (active !== null && lastAng !== 99 && Date.now() - lastT > 250) { lastT = Date.now(); send({ a: 'ang', r: Math.round(lastAng * 100) / 100 }); } }, 120);
+    });
+    const beat = setInterval(() => { if (sk.active && lastAng !== 99 && Date.now() - lastT > 250) { lastT = Date.now(); send({ a: 'ang', r: Math.round(lastAng * 100) / 100 }); } }, 120);
     cleanup = () => clearInterval(beat);
-    pad.addEventListener('pointerdown', (e) => { e.preventDefault(); if (active !== null) return; active = e.pointerId; ox = e.clientX; oy = e.clientY; try { pad.setPointerCapture(e.pointerId); } catch {} });
-    pad.addEventListener('pointermove', (e) => { if (e.pointerId === active) move(e); });
-    const up = (e) => { if (e.pointerId === active) { active = null; knob.style.transform = ''; } };
-    pad.addEventListener('pointerup', up); pad.addEventListener('pointercancel', up);
+    howto(root, 'turf', 'How to play Turf War', [['🕹️', 'Drag anywhere. You keep moving that way'], ['⭕', 'Leave your colour and loop back to claim land'], ['✂️', 'Cross a rival trail to knock them out. Protect yours']]);
     evt = (m) => {
       if (m.e !== 'tf') return;
       if (m.pct != null) pct.textContent = m.pct + '%';
-      if (m.st === 'ko') { buzz([80, 50, 160]); st.textContent = 'Knocked out! New patch, keep going'; setTimeout(() => { st.textContent = 'Drag anywhere, any direction'; }, 2500); }
+      if (m.st === 'ko') { buzz([80, 50, 160]); st.textContent = m.by ? `${m.by} cut your trail. New patch, keep going` : 'You hit your own trail. New patch, keep going'; root.classList.remove('shake'); void root.offsetWidth; root.classList.add('shake'); setTimeout(() => { st.textContent = idle; }, 3000); }
       if (m.st === 'out') { buzz(400); st.textContent = 'No empty land left. You are out'; pct.textContent = 'OUT'; }
       if (m.st === 'cap') buzz(20);
     };
   }
 
-  // ---------- joystick + one button (Car Football, Blast Zone) ----------
+  // ---------- thumb stick + one button (Car Football, Blast Zone) ----------
   function showPad(d) {
-    const root = screen('padm', `<div class="pad2"><div class="joy"><div class="ttl">${esc(d.title || '')}</div><div class="stick"><i></i></div><div class="sub">${esc(d.sub || '')}</div></div><button class="act"><span>${esc(d.btn || 'GO')}</span></button></div>`);
-    const pad = root.querySelector('.pad2'), joy = root.querySelector('.joy'), knob = root.querySelector('.stick i'), act = root.querySelector('.act'), ttl = root.querySelector('.ttl'), sub = root.querySelector('.sub');
-    let ox = 0, oy = 0, active = null, jx = 0, jy = 0, sx = 9, sy = 9, lastT = 0, cdT = 0;
+    const four = !!d.four;
+    const root = screen('ctl padm', `<div class="pad2${four ? ' four' : ''}"><div class="bar"><b class="ttl">${esc(d.title || '')}</b><span class="sub">${esc(d.sub || '')}</span></div>
+      <div class="zone">${STICK}<div class="tip">${four ? 'MOVE' : 'DRIVE'}</div></div>
+      <div class="side"><button class="act"><i>${esc(d.icon || '')}</i><b>${esc(d.btn || 'GO')}</b><u></u></button></div></div>`);
+    const pad = root.querySelector('.pad2'), zone = root.querySelector('.zone'), base = root.querySelector('.base'), act = root.querySelector('.act'), ttl = root.querySelector('.ttl'), sub = root.querySelector('.sub'), cdBar = act.querySelector('u');
+    let jx = 0, jy = 0, sx = 9, sy = 9, lastT = 0, cdT = 0;
     const push = (force) => { const now = Date.now(); if (!force && (now - lastT < 33 || (Math.abs(jx - sx) < 0.03 && Math.abs(jy - sy) < 0.03))) return; sx = jx; sy = jy; lastT = now; send({ a: 'joy', x: Math.round(jx * 100) / 100, y: Math.round(jy * 100) / 100 }); };
-    joy.addEventListener('pointerdown', (e) => { e.preventDefault(); if (active !== null) return; active = e.pointerId; ox = e.clientX; oy = e.clientY; try { joy.setPointerCapture(e.pointerId); } catch {} });
-    joy.addEventListener('pointermove', (e) => {
-      if (e.pointerId !== active) return; let dx = e.clientX - ox, dy = e.clientY - oy; const m = Math.hypot(dx, dy), R = 56;
-      if (m > R) { ox += dx - dx * R / m; oy += dy - dy * R / m; dx *= R / m; dy *= R / m; } // the centre follows the thumb, so reversing is instant
-      knob.style.transform = `translate(${dx}px,${dy}px)`; jx = dx / R; jy = dy / R; push(false);
-    });
-    const up = (e) => { if (e.pointerId !== active) return; active = null; knob.style.transform = ''; jx = jy = 0; push(true); };
-    joy.addEventListener('pointerup', up); joy.addEventListener('pointercancel', up);
+    const sk = stick(zone, base, 56, (x, y) => {
+      jx = x; jy = y; if (four) { const h = Math.abs(x) > Math.abs(y), on = Math.hypot(x, y) > 0.3; base.dataset.dir = !on ? '' : h ? (x > 0 ? 'r' : 'l') : (y > 0 ? 'd' : 'u'); }
+      push(false);
+    }, () => { jx = jy = 0; base.dataset.dir = ''; push(true); });
     hold(act, () => { send({ a: 'btn', d: 1 }); buzz(15); }, () => send({ a: 'btn', d: 0 }));
-    const beat = setInterval(() => { if (jx !== sx || jy !== sy || (active !== null && Date.now() - lastT > 300)) push(true); if (cdT && Date.now() > cdT) { cdT = 0; act.classList.remove('cd'); } }, 50);
+    const beat = setInterval(() => { if (jx !== sx || jy !== sy || (sk.active && Date.now() - lastT > 300)) push(true); if (cdT && Date.now() > cdT) { cdT = 0; act.classList.remove('cd'); } }, 50);
+    if (d.how) howto(root, 'pad' + d.btn, d.how[0], d.how.slice(1));
     evt = (m) => {
       if (m.e !== 'pad') return;
-      if (m.bg) pad.style.background = m.bg; if (m.title !== undefined) ttl.textContent = m.title; if (m.sub !== undefined) sub.textContent = m.sub;
-      if (m.cd) { cdT = Date.now() + m.cd * 1000; act.classList.add('cd'); } if (m.buzz) buzz(m.buzz);
+      if (m.bg) pad.style.setProperty('--team', m.bg); if (m.title !== undefined) ttl.textContent = m.title; if (m.sub !== undefined) sub.textContent = m.sub;
+      if (m.cd) { cdT = Date.now() + m.cd * 1000; act.classList.add('cd'); cdBar.style.animation = 'none'; void cdBar.offsetWidth; cdBar.style.animation = `fillup ${m.cd}s linear forwards`; }
+      if (m.buzz) buzz(m.buzz); if (m.toast) toast(root, esc(m.toast), m.good ? 'good' : 'bad');
     };
     cleanup = () => clearInterval(beat);
+  }
+
+  // ---------- Size Up: resize the red picture until it looks right ----------
+  const tintCache = {};
+  function tintImg(name, color) {
+    const key = name + color; if (tintCache[key]) return tintCache[key];
+    const o = { im: null, ar: 1 }; tintCache[key] = o; const im = new Image();
+    im.onload = () => { const c = document.createElement('canvas'); c.width = im.width; c.height = im.height; const x = c.getContext('2d'); x.drawImage(im, 0, 0); x.globalCompositeOperation = 'source-in'; x.fillStyle = color; x.fillRect(0, 0, c.width, c.height); o.im = c; o.ar = im.width / im.height; };
+    im.src = '/assets/sizeup/' + name + '.png'; return o;
+  }
+  function showSize(d) {
+    const BLUE = '#4f95ff', RED = '#ff5a4f', lo = d.lo, hi = d.hi, span = Math.log(hi / lo), ends = Date.now() + d.time * 1000;
+    let v = clamp(d.start, lo, hi), locked = false, sentT = 0, sentV = 0, viewS = 0, raf = 0, over = false;
+    const root = screen('ctl szc', `<div class="szp"><div class="top"><span class="rd">ROUND ${d.round} / ${d.of}</span><b class="tm"></b></div><h2>${esc(d.q)}</h2>
+      <div class="stagew"><canvas></canvas><div class="lg"><i></i>${esc(d.ref.label)}</div><div class="tip">Drag up or down to resize the red one</div></div>
+      <button class="read"><b></b><small></small></button>
+      <div class="sl"><button class="nud" data-d="-1">−</button><input type="range" min="0" max="1000" step="1"><button class="nud" data-d="1">+</button></div>
+      <button class="btn red lock">LOCK IN</button><div class="res" hidden></div></div>`);
+    const cv = root.querySelector('canvas'), g = cv.getContext('2d'), rng = root.querySelector('input'), read = root.querySelector('.read'), lockB = root.querySelector('.lock'), tm = root.querySelector('.tm'), tip = root.querySelector('.tip'), res = root.querySelector('.res');
+    const ref = tintImg(d.ref.img, BLUE), tgt = tintImg(d.tgt.img, RED);
+    const dims = (o, dim, size) => (dim === 'h' ? [size * o.ar, size] : [size, size / o.ar]);
+    const sync = (fromSlider) => {
+      v = clamp(v, lo, hi); if (!fromSlider) rng.value = Math.round((Math.log(v / lo) / span) * 1000);
+      const r = v / d.ref.size; read.querySelector('b').textContent = fmtSize(v) + ' ' + d.word;
+      read.querySelector('small').textContent = (r >= 1 ? (r >= 10 ? Math.round(r) : r.toFixed(1)) + '× the blue one' : '1/' + (1 / r >= 10 ? Math.round(1 / r) : (1 / r).toFixed(1)) + ' of the blue one') + ' · tap to type';
+    };
+    const changed = () => { tip.style.opacity = '0'; sync(false); };
+    rng.addEventListener('input', () => { if (locked) return; v = lo * Math.exp((rng.value / 1000) * span); tip.style.opacity = '0'; sync(true); });
+    root.querySelectorAll('.nud').forEach((b) => { let iv = 0; const go = () => { if (locked) return; v *= Math.pow(1.02, +b.dataset.d); changed(); }; hold(b, () => { go(); buzz(8); iv = setInterval(go, 90); }, () => clearInterval(iv)); });
+    // drag on the picture: up = bigger. Two fingers pinch.
+    const pts = new Map(); let startV = v, startY = 0, startD = 0;
+    cv.addEventListener('pointerdown', (e) => { e.preventDefault(); if (locked) return; try { cv.setPointerCapture(e.pointerId); } catch {} pts.set(e.pointerId, [e.clientX, e.clientY]); startV = v; startY = e.clientY; if (pts.size === 2) { const [a, b] = [...pts.values()]; startD = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1; } });
+    cv.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId) || locked) return; pts.set(e.pointerId, [e.clientX, e.clientY]);
+      if (pts.size >= 2) { const [a, b] = [...pts.values()]; v = startV * (Math.hypot(a[0] - b[0], a[1] - b[1]) / startD); } else v = startV * Math.exp((startY - e.clientY) * 0.008);
+      changed();
+    });
+    const pup = (e) => { pts.delete(e.pointerId); startV = v; const p = [...pts.values()][0]; if (p) startY = p[1]; };
+    cv.addEventListener('pointerup', pup); cv.addEventListener('pointercancel', pup);
+    // typing an exact number
+    read.onclick = () => {
+      if (locked) return; let unit = v >= 1000 ? 1000 : v >= 1 ? 1 : 0.01;
+      const m = el(`<div class="modal"><h2>Type your guess</h2><input type="number" inputmode="decimal" step="any" value="${+(v / unit).toPrecision(3)}"><div class="units">${[[0.01, 'cm'], [1, 'm'], [1000, 'km']].map(([u, n]) => `<button class="tb ${u === unit ? 'on' : ''}" data-u="${u}">${n}</button>`).join('')}</div><button class="btn" id="ok">SET</button><button class="btn ghost" id="no">Cancel</button></div>`);
+      m.querySelectorAll('[data-u]').forEach((b) => (b.onclick = () => { unit = +b.dataset.u; m.querySelectorAll('[data-u]').forEach((x) => x.classList.toggle('on', x === b)); }));
+      m.querySelector('#no').onclick = () => m.remove();
+      m.querySelector('#ok').onclick = () => { const n = parseFloat(m.querySelector('input').value); if (n > 0) { v = n * unit; changed(); } m.remove(); };
+      root.appendChild(m); setTimeout(() => { try { m.querySelector('input').select(); } catch {} }, 60);
+    };
+    const setLocked = (on) => { locked = on; root.querySelector('.szp').classList.toggle('locked', on); lockB.textContent = on ? 'LOCKED IN ✔' : 'LOCK IN'; rng.disabled = on; };
+    lockB.onclick = () => { if (locked || over) return; setLocked(true); send({ a: 'lock', v }); buzz(30); };
+    evt = (m) => {
+      if (m.e !== 'sz') return;
+      if (m.st === 'second') {
+        const md = el('<div class="modal"><h2>Second chance</h2><p>That guess is a long way off. You get one redo per game.</p><button class="btn red" id="ag">CHANGE MY GUESS</button><button class="btn ghost" id="kp">Keep it</button></div>');
+        md.querySelector('#ag').onclick = () => { send({ a: 'again' }); setLocked(false); md.remove(); }; md.querySelector('#kp').onclick = () => { send({ a: 'keep' }); md.remove(); };
+        root.appendChild(md); buzz([40, 40, 40]);
+      }
+      if (m.st === 'reveal') {
+        over = true; setLocked(true); root.querySelectorAll('.modal').forEach((x) => x.remove()); res.hidden = false;
+        res.innerHTML = `<b class="${m.pts === 100 ? 'bull' : ''}">+${m.pts}</b><span>${m.pts === 100 ? 'Bullseye! ' : ''}It is about ${esc(m.truth)}.${m.mine ? ' You said ' + esc(m.mine) + '.' : ' You did not guess.'}</span>`; buzz(m.pts >= 80 ? [40, 40, 120] : 60);
+      }
+    };
+    function frame() {
+      raf = requestAnimationFrame(frame);
+      const now = Date.now(), left = Math.max(0, Math.ceil((ends - now) / 1000)); if (!over) { tm.textContent = left; tm.classList.toggle('low', left <= 5); }
+      if (!locked && Math.abs(v - sentV) > 1e-9 && now - sentT > 200) { sentT = now; sentV = v; send({ a: 'sz', v }); }
+      const w = cv.clientWidth, h = cv.clientHeight, dpr = Math.min(devicePixelRatio || 1, 2); if (!w || !h) return;
+      if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+      g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+      const [rw, rh] = dims(ref, d.ref.dim, d.ref.size), [tw, th] = dims(tgt, d.tgt.dim, v), gap = (rw + tw) * 0.1, ground = h * 0.9;
+      const want = Math.min((w * 0.92) / (rw + tw + gap), (h * 0.72) / Math.max(rh, th)); viewS = viewS ? viewS + (want - viewS) * 0.22 : want; // the view zooms out as your guess grows
+      const s = viewS, x0 = (w - (rw + tw + gap) * s) / 2;
+      g.strokeStyle = 'rgba(255,255,255,.75)'; g.lineWidth = 3; g.beginPath(); g.moveTo(8, ground); g.lineTo(w - 8, ground); g.stroke();
+      if (ref.im) g.drawImage(ref.im, x0, ground - rh * s, rw * s, rh * s);
+      if (tgt.im) g.drawImage(tgt.im, x0 + (rw + gap) * s, ground - th * s, tw * s, th * s);
+    }
+    sync(false); raf = requestAnimationFrame(frame);
+    howto(root, 'size', 'How to play Size Up', [['🟦', 'The blue picture is at its true size'], ['🟥', 'Resize the red one: drag it, use the slider, or type a number'], ['🔒', 'Lock in. The closest guess scores the most']]);
+    cleanup = () => cancelAnimationFrame(raf);
   }
 
   // ---------- Punchline ----------
@@ -257,18 +391,26 @@
     let i = 0; const ends = Date.now() + d.time * 1000;
     const step = () => {
       if (i >= d.prompts.length) { clearInterval(tk); return showWait({ title: 'Answers in!', text: 'Waiting for the others…' }); }
-      const p = d.prompts[i], root = screen('', `<div class="plw"><div class="top"><label>Prompt ${i + 1} of ${d.prompts.length}</label><b class="tm"></b></div><h2>${esc(p.text)}</h2>
-        <textarea maxlength="90" rows="3" placeholder="Type something funny…" autocomplete="off"></textarea><div class="cnt">0 / 90</div><div class="grow"></div><button class="btn red">SEND</button></div>`);
+      const p = d.prompts[i], root = screen('', `<div class="plw"><div class="top"><label>${esc(d.label || 'Prompt')} ${d.prompts.length > 1 ? `${i + 1} of ${d.prompts.length}` : ''}</label><b class="tm"></b></div><h2>${esc(p.text)}</h2>
+        <textarea maxlength="90" rows="3" placeholder="${esc(d.hint || 'Type something funny…')}" autocomplete="off"></textarea><div class="cnt">0 / 90</div><div class="grow"></div>
+        <button class="btn red" id="snd">SEND</button>${d.safe ? '<button class="btn ghost sm" id="sf">🎲 I have nothing. Write one for me (half points)</button>' : ''}</div>`);
       const ta = root.querySelector('textarea'), go = () => { const t = ta.value.trim(); if (!t) { ta.focus(); return; } send({ a: 'ans', id: p.id, text: t }); i++; step(); };
       ta.addEventListener('input', () => { root.querySelector('.cnt').textContent = ta.value.length + ' / 90'; });
-      root.querySelector('.btn').onclick = go; setTimeout(() => { try { ta.focus(); } catch {} }, 60);
+      root.querySelector('#snd').onclick = go; const sf = root.querySelector('#sf'); if (sf) sf.onclick = () => { send({ a: 'ans', id: p.id, safe: 1 }); i++; step(); };
+      setTimeout(() => { try { ta.focus(); } catch {} }, 60);
     };
     const tk = setInterval(() => { const el = app.querySelector('.plw .tm'); if (el) el.textContent = Math.max(0, Math.ceil((ends - Date.now()) / 1000)); }, 250);
     step(); cleanup = () => clearInterval(tk);
   }
   function showVote(d) {
-    const root = screen('', `<div class="plw"><label>Vote for the funniest</label><h2>${esc(d.prompt)}</h2><div class="stack" style="margin-top:14px">${d.opts.map((o) => `<button class="btn ghost vote" data-k="${o.k}">${esc(o.text)}</button>`).join('')}</div></div>`);
-    root.querySelectorAll('[data-k]').forEach((b) => (b.onclick = () => { send({ a: 'vote', k: +b.dataset.k }); buzz(20); showWait({ title: 'Voted!', text: 'Look at the big screen.' }); }));
+    const root = screen('', `<div class="plw"><label>${esc(d.label || 'Vote for the funniest')}</label><h2>${esc(d.prompt)}</h2><div class="stack" style="margin-top:14px">${d.opts.map((o) => `<button class="btn ghost vote" data-k="${o.k}">${esc(o.text)}</button>`).join('')}</div></div>`);
+    root.querySelectorAll('[data-k]').forEach((b) => (b.onclick = () => { send({ a: 'vote', k: +b.dataset.k }); buzz(20); showReact({ title: 'Voted!', text: 'Throw a reaction at the big screen.' }); }));
+  }
+  // reaction buttons: the emoji float up the big screen
+  function showReact(d) {
+    const EM = ['😂', '💀', '🔥', '👏', '🥱', '🍅'];
+    const root = screen('', `<div class="rx"><h2>${esc(d.title || 'Look up!')}</h2><p>${esc(d.text || 'Throw a reaction at the big screen.')}</p><div class="rxg">${EM.map((e, i) => `<button data-k="${i}">${e}</button>`).join('')}</div></div>`);
+    let last = 0; root.querySelectorAll('[data-k]').forEach((b) => hold(b, () => { const now = Date.now(); if (now - last < 250) return; last = now; send({ a: 'react', k: +b.dataset.k }); buzz(10); }));
   }
 
   // ---------- boot ----------
