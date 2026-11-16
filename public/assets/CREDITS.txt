@@ -4,6 +4,13 @@
 - Starter Kit Racing: props/decoration-tents.glb, sfx/impact.ogg, sfx/skid.ogg
 - Mini Characters: chars/*.glb
 - Starter Kit 3D Platformer: blocks/brick.glb, sfx/break.ogg, coin.ogg, jump.ogg, land.ogg, fall.ogg
+
+Added for the racing graphics upgrade, all CC0 as well:
+- Quaternius (quaternius.com): Ultimate Stylized Nature Pack (nature2/*), Medieval Village Pack and Buildings Pack (town/*)
+- Kenney Racing Kit 2.0: racekit/*.glb
+- Poly Haven (polyhaven.com), HDRIs by Greg Zaal: env/rooitou_park_1k.hdr, env/kiara_1_dawn_1k.hdr
+The full record, with source addresses and what was changed, is in ASSET_LICENSES.md at the top of the project.
+
 CC0 means they can be used freely, including commercially, with no attribution required. Credit is given here as a thank-you.
 
 The pictures in sizeup/*.png are from Twemoji (https://github.com/jdecked/twemoji), Copyright Twitter, Inc. and other
