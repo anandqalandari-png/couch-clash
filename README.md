@@ -42,15 +42,17 @@ Any host that runs a long-lived Node process with WebSockets works the same way 
 
 ## Art credits
 
-Cars, trees, rocks, cones, tents, the Blast Zone characters and crates, and the sound effects are free CC0 assets by Kenney (kenney.nl): Car Kit, Nature Kit, Mini Characters, Starter Kit Racing and Starter Kit 3D Platformer. The pictures in Size Up are from Twemoji (© Twitter, Inc. and other contributors, CC-BY 4.0), turned into silhouettes for the guessing phase. See `public/assets/CREDITS.txt`. Terrain, roads, skies and effects are generated in code. If a model file is missing the game falls back to simpler built-in shapes.
+Free CC0 assets by Kenney (kenney.nl): Car Kit, Nature Kit, Mini Characters, Starter Kit Racing, Starter Kit 3D Platformer and Racing Kit. The racing scenery also uses CC0 models by Quaternius (Ultimate Stylized Nature, Medieval Village and Buildings packs) and two CC0 sky photographs from Poly Haven for reflections. The pictures in Size Up are from Twemoji (© Twitter, Inc. and other contributors, CC-BY 4.0), turned into silhouettes for the guessing phase. `ASSET_LICENSES.md` lists every file with its source, creator and licence. The racing cars, terrain, roads, walls, skies and effects are generated in code. If a model file is missing the game leaves it out or falls back to simpler built-in shapes.
 
 ## Graphics quality
 
-The 3D games (racing, Car Football, Blast Zone) start at full quality and step down by themselves if the laptop can't hold a smooth frame rate: first the glow effect goes, then resolution, then shadows. To lock the level, open the laptop page with `?q=high` or `?q=low` at the end of the address. If a game still feels choppy, `?q=low` is the first thing to try, along with closing other tabs and plugging the laptop in.
+**Racing** has three presets: Performance, Balanced and High. One or two racers start on High; three to five start on Balanced. The game then follows the measured frame rate: under about 48 frames a second for a second and a half it drops one preset; after 20 smooth seconds it tries one preset up, once. The current preset is shown in small letters under the minimap. To lock it, open the laptop page with `?q=high`, `?q=balanced` or `?q=low` at the end of the address. Presets change resolution, shadow detail, how much small scenery is drawn and how soon far trees and houses switch to simple stand-ins; they never change the driving.
+
+Car Football and Blast Zone start at full quality and step down by themselves: first the glow effect goes, then resolution, then shadows (`?q=high` or `?q=low` locks them too). If a game still feels choppy, `?q=low` is the first thing to try, along with closing other tabs and plugging the laptop in.
 
 ## Things you can tune
 
-- `public/js/race.js`: `CARS` (speed, acceleration, handling, cooldown), `TRACKS` (control points, width, laps, grip, boost pads), `POINTS`. The look of the tracks and cars lives in `public/js/race-world.js`.
+- `public/js/race.js`: `CARS` (speed, acceleration, handling, cooldown), `TRACKS` (control points, width, laps, grip, boost pads), `POINTS`. The racing cars are built in `public/js/race-car.js` (`SHAPES`: one set of body curves per car) and the scenery in `public/js/race-scene.js`; `public/js/race-world.js` holds the track maths, the themes (`THEMES`: sky, fog, light, road colours) and the cars Car Football uses. The chase camera (how far it pulls back with speed) and the `PRESETS` table are in `race.js`.
 - `public/js/sketch.js`: `WORDS`, `DRAW_TIME`, `DRAWER_SHARE` (the drawer earns half the word's points when someone gets it; set to 0 to turn that off).
 - `public/js/punch.js`: `PROMPTS`, `PERSONAL` (use `{name}` and `{name2}` where a friend's name should go), `FINALS` and `QUIPS` (the ready-made dice answers). Add your own inside jokes. Also `WRITE_TIME`, `VOTE_TIME`.
 - `public/js/size.js`: `THINGS` (name, real size in metres) and `LIST` (which thing is compared with which, and its pack), `ROUNDS`, `GUESS_TIME`. New pictures go in `public/assets/sizeup/`.

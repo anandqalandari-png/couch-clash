@@ -25,21 +25,21 @@ export async function loadAssets(theme) {
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const rnd = (a, b) => a + Math.random() * (b - a);
-const lerp = (a, b, t) => a + (b - a) * t;
-const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+export const lerp = (a, b, t) => a + (b - a) * t;
+export const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
-const THEMES = {
-  beach:  { sky: [0x1f7fe0, 0xbfe9ff], fog: [0xbfe9ff, 300, 1500], road: '#4b4b55', line: '#ffffff', kerb: [0xff4b2b, 0xffffff], barrier: [0xff4b2b, 0xf4f4f4], hemi: [0xffffff, 0xd9c08a, 0.95], sun: [0xfff0cc, 2.1], sunDir: [-0.55, 0.75, 0.35], hill: [3, 26], dust: 0xe8cf95 },
+export const THEMES = {
+  beach:  { sky: [0x2a7fdc, 0xcfe6fa], fog: [0xd3e3f0, 170, 1550], road: '#53535b', line: '#f6f1e4', kerb: [0xd9432e, 0xf3e7cb], barrier: [0xd9432e, 0xf3e7cb], hemi: [0xd6e6ff, 0xb5a67c, 0.95], sun: [0xffdfae, 1.95], sunDir: [-0.6, 0.6, 0.42], hill: [4, 44], dust: 0xd9c9a2 },
   desert: { sky: [0x4a3596, 0xffb066], fog: [0xffb878, 260, 1400], road: '#56443b', line: '#ffe9c2', kerb: [0xffc62b, 0x3a2a22], barrier: [0xffc62b, 0x3a2a22], hemi: [0xffd9b0, 0xb5653a, 0.85], sun: [0xffb070, 2.4], sunDir: [-0.7, 0.42, -0.45], hill: [2, 34], dust: 0xd99a5c },
   snow:   { sky: [0x5f86bd, 0xe9f2fb], fog: [0xe9f2fb, 200, 1100], road: '#7f93ab', line: '#ffffff', kerb: [0x2b7bff, 0xffffff], barrier: [0x2b7bff, 0xffffff], hemi: [0xffffff, 0xbfd2ea, 1.05], sun: [0xfff4e6, 1.7], sunDir: [0.5, 0.6, 0.5], hill: [4, 40], dust: 0xffffff },
   neon:   { sky: [0x05030f, 0x3a0f5c], fog: [0x1a0730, 200, 1100], road: '#15122a', line: '#7a5cff', kerb: [0x00f0ff, 0xff2bd6], barrier: [0x00f0ff, 0xff2bd6], hemi: [0x9f8cff, 0x30104a, 0.9], sun: [0xff9af0, 1.1], sunDir: [0.2, 0.8, -0.5], hill: [0, 0], dust: 0x8a6cff },
 };
 
 // ---------- small helpers ----------
-function M(x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1, rx = 0, ry = 0, rz = 0) {
+export function M(x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1, rx = 0, ry = 0, rz = 0) {
   return new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(sx, sy, sz));
 }
-function merge(parts) { // coloured parts -> one flat-shaded geometry (one draw call per prop type)
+export function merge(parts) { // coloured parts -> one flat-shaded geometry (one draw call per prop type)
   const pos = [], col = [];
   for (const { g, c, m } of parts) {
     const gg = g.index ? g.toNonIndexed() : g.clone(); if (m) gg.applyMatrix4(m);
@@ -50,7 +50,7 @@ function merge(parts) { // coloured parts -> one flat-shaded geometry (one draw 
   out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); out.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   out.computeVertexNormals(); return out;
 }
-function instanced(geo, mat, list, shadow = true) {
+export function instanced(geo, mat, list, shadow = true) {
   const im = new THREE.InstancedMesh(geo, mat, list.length);
   list.forEach((t, i) => im.setMatrixAt(i, M(t.x, t.y || 0, t.z, t.s * (t.sx || 1), t.s * (t.sy || 1), t.s * (t.sz || 1), 0, t.ry || 0, 0)));
   im.instanceMatrix.needsUpdate = true; im.frustumCulled = false; im.castShadow = shadow; return im;
@@ -59,10 +59,10 @@ export function canvasTex(w, h, draw) {
   const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
-const hash = (x, y) => { const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return n - Math.floor(n); };
-function vnoise(x, y) { const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf); return lerp(lerp(hash(xi, yi), hash(xi + 1, yi), u), lerp(hash(xi, yi + 1), hash(xi + 1, yi + 1), u), v); }
-const fbm = (x, y) => (vnoise(x, y) * 0.5 + vnoise(x * 2.1, y * 2.1) * 0.25 + vnoise(x * 4.3, y * 4.3) * 0.125) / 0.875;
-const glowTex = canvasTex(128, 128, (c) => { const g = c.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.25, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(255,255,255,0)'); c.fillStyle = g; c.fillRect(0, 0, 128, 128); });
+export const hash = (x, y) => { const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return n - Math.floor(n); };
+export function vnoise(x, y) { const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf); return lerp(lerp(hash(xi, yi), hash(xi + 1, yi), u), lerp(hash(xi, yi + 1), hash(xi + 1, yi + 1), u), v); }
+export const fbm = (x, y) => (vnoise(x, y) * 0.5 + vnoise(x * 2.1, y * 2.1) * 0.25 + vnoise(x * 4.3, y * 4.3) * 0.125) / 0.875;
+export const glowTex = canvasTex(128, 128, (c) => { const g = c.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.25, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(255,255,255,0)'); c.fillStyle = g; c.fillRect(0, 0, 128, 128); });
 export function glow(color, size, opacity = 1) { const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity, fog: false })); s.scale.setScalar(size); return s; }
 
 // ---------- track ----------
@@ -81,15 +81,23 @@ export function buildTrack(def) {
   for (let j = 0; j < DN; j++) for (let i = 0; i < DN; i++) { const x = -HALF + i * CELL, z = -HALF + j * CELL; let m = 1e12; for (let k = 0; k < N; k += 2) { const d = (px[k] - x) ** 2 + (pz[k] - z) ** 2; if (d < m) m = d; } df[j * DN + i] = Math.sqrt(m); }
   T.dist = (x, z) => { const fx = clamp((x + HALF) / CELL, 0, DN - 1.001), fz = clamp((z + HALF) / CELL, 0, DN - 1.001), i = Math.floor(fx), j = Math.floor(fz), u = fx - i, v = fz - j; return lerp(lerp(df[j * DN + i], df[j * DN + i + 1], u), lerp(df[(j + 1) * DN + i], df[(j + 1) * DN + i + 1], u), v); };
   const th = THEMES[def.theme], seed = def.name.length * 7.3;
+  // the widest open spot inside the loop: on the coast track it becomes a lake with a stone bridge and a village
+  T.inside = (x, z) => { let c = false; for (let i = 0, j = N - 4; i < N; j = i, i += 4) if ((pz[i] > z) !== (pz[j] > z) && x < ((px[j] - px[i]) * (z - pz[i])) / (pz[j] - pz[i]) + px[i]) c = !c; return c; };
+  T.lake = null;
+  if (def.theme === 'beach') {
+    let best = 0, lx = 0, lz = 0; for (let x = -300; x <= 300; x += 10) for (let z = -300; z <= 300; z += 10) { if (!T.inside(x, z)) continue; const d = T.dist(x, z); if (d > best) { best = d; lx = x; lz = z; } }
+    if (best > T.wall + 62) T.lake = { x: lx, z: lz, r: Math.min(92, best - T.wall - 24) };
+  }
   T.height = (x, z) => {
     const d = T.dist(x, z) - T.hw; let h = smooth(16, 120, d) * (th.hill[0] + th.hill[1] * fbm(x * 0.0055 + seed, z * 0.0055 + seed));
-    if (def.theme === 'beach') h = lerp(h, -9, smooth(420, 560, Math.hypot(x, z)));
+    if (T.lake) { const dl = Math.hypot(x - T.lake.x, z - T.lake.z) + (fbm(x * 0.021 + 3, z * 0.021 + 7) - 0.5) * 24; h = lerp(h, -6.5, smooth(T.lake.r, T.lake.r * 0.66, dl)) + smooth(T.lake.r * 0.66, T.lake.r, dl) * smooth(T.lake.r * 1.5, T.lake.r, dl) * 0.6; }
+    if (def.theme === 'beach') h = lerp(h, -9, smooth(640, 820, Math.hypot(x, z)));
     if (def.theme === 'snow') h += smooth(60, 300, d) * 14 * vnoise(x * 0.02, z * 0.02);
     return h;
   };
   return T;
 }
-function ribbon(T, inner, outer, y, colorFn, uvLen) { // quads along the road between two lateral offsets
+export function ribbon(T, inner, outer, y, colorFn, uvLen) { // quads along the road between two lateral offsets
   const { N, px, pz, tx, tz } = T, pos = [], col = [], uv = [];
   for (let i = 0; i < N; i++) {
     const j = (i + 1) % N, c = colorFn ? colorFn(i) : null; if (colorFn && !c) continue;
@@ -103,7 +111,7 @@ function ribbon(T, inner, outer, y, colorFn, uvLen) { // quads along the road be
   if (col.length) g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3)); if (uv.length) g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.computeVertexNormals(); return g;
 }
-function wallRibbon(T, off, h, cA, cB) { // striped crash barrier standing along the road edge
+export function wallRibbon(T, off, h, cA, cB) { // striped crash barrier standing along the road edge
   const { N, px, pz, tx, tz } = T, pos = [], col = [];
   for (let i = 0; i < N; i++) {
     const j = (i + 1) % N, c = Math.floor(i / 3) % 2 ? cA : cB;

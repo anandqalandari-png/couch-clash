@@ -335,3 +335,15 @@ body{background:var(--paper);color:var(--ink);font-family:var(--body);overflow:h
 .hint.sound{border-style:solid;background:var(--yellow);font-weight:700;display:inline-block}
 .hint[hidden]{display:none}
 .pl-prompt.sm{max-width:60em}
+
+/* race HUD: name and lap grouped top-left, place as "2/5" top-right, like a broadcast overlay */
+.rhud{border:1px solid #0b0b0d}
+.rhud .who{left:14px;top:12px;font-size:clamp(14px,1.45vw,26px);letter-spacing:.01em;background:linear-gradient(90deg,rgba(12,12,14,.72),rgba(12,12,14,0));padding:5px 26px 5px 8px;border-radius:8px 0 0 8px}
+.rhud .lap{left:14px;bottom:auto;top:calc(12px + clamp(30px,2.9vw,50px));background:none;padding:0 0 0 8px;font-size:clamp(11px,1.05vw,18px);letter-spacing:.12em;text-shadow:0 2px 4px rgba(0,0,0,.75)}
+.rhud .pos{right:16px;top:8px;font-size:clamp(30px,4.4vw,80px);font-family:var(--body);font-weight:900;letter-spacing:-.02em;text-shadow:0 3px 10px rgba(0,0,0,.55)}
+.rhud .pos small{font-size:.5em;opacity:.8;font-weight:700}
+.rhud .item{bottom:14px;background:rgba(12,12,14,.7);color:#fff;border:1px solid rgba(255,255,255,.5)}
+.rhud .spd{font-family:var(--body);font-weight:900;text-shadow:0 2px 8px rgba(0,0,0,.6)}
+.rinfo .q{font-style:normal;font-weight:700;font-size:10px;letter-spacing:.14em;text-transform:uppercase;opacity:.5}
+.rinfo.float .q{position:absolute;left:0;right:0;bottom:-16px;text-align:center;color:#fff;text-shadow:0 1px 3px #000;opacity:.7}
+.rhud.boost .lines{opacity:.45}

@@ -1,7 +1,9 @@
 // Turbo Clash: split-screen 3D racing. Everything (physics, AI, rendering) runs on the laptop.
 import * as THREE from 'three';
 import { showResults } from './host.js';
-import { buildTrack, buildWorld, buildCar, nameTag, loadAssets, glow, canvasTex, BOT_MODELS, clamp, rnd } from './race-world.js';
+import { buildTrack, nameTag, glow, canvasTex, clamp, rnd } from './race-world.js';
+import { loadRaceAssets, buildScene } from './race-scene.js';
+import { buildRaceCar, WheelBatch } from './race-car.js';
 
 const MAX_RACERS = 5, POINTS = [10, 7, 5, 3, 2];
 
@@ -29,7 +31,13 @@ export const TRACKS = [
 ];
 
 const ORD = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'];
-const QUALITY = new URLSearchParams(location.search).get('q'); // ?q=high or ?q=low locks the graphics level; otherwise it adapts to the laptop
+const QUALITY = new URLSearchParams(location.search).get('q'); // ?q=high, ?q=balanced or ?q=low locks the graphics preset; otherwise it adapts to the laptop
+// Graphics presets. Gameplay, physics and phone input are identical in all three.
+const PRESETS = [
+  { name: 'Performance', ratio: [0.85, 0.75], shadow: 0, trees: 0.6, small: 0, reach: 0, lod: 70 },   // ratio = render scale for [1-2 views, 3-5 views]
+  { name: 'Balanced', ratio: [1.25, 1], shadow: 2048, trees: [1, 0.85], small: [1, 0.7], reach: [260, 110], lod: [220, 120] },
+  { name: 'High', ratio: [2, 1.5], shadow: 4096, trees: 1, small: 1, reach: [480, 260], lod: [380, 200] },
+];
 
 // ============================================================
 export function start(ctx) {
@@ -71,28 +79,37 @@ export function start(ctx) {
     phase = 'loading'; pickEl.remove();
     const load = document.createElement('div'); load.className = 'bigmsg'; load.style.background = '#14110f'; load.innerHTML = '<span style="font-size:9vh">Loading track…</span>'; stage.appendChild(load);
     for (const p of racers) ctx.to(p.id, { m: 'wait', title: 'Loading…', text: 'Get ready.' });
-    const assets = await loadAssets(TRACKS[trackIdx].theme);
+    const assets = await loadRaceAssets(TRACKS[trackIdx].theme); // everything is loaded before the countdown, so nothing stalls mid-race
     if (stopped) return;
     load.remove(); phase = 'countdown';
     for (const p of racers) p.races++;
     const T = buildTrack(TRACKS[trackIdx]), LAPS = T.def.laps;
-    const renderer = new THREE.WebGLRenderer({ antialias: (devicePixelRatio || 1) < 2, powerPreference: 'high-performance' });
-    let shadowFrames = 3, level = QUALITY === 'low' ? 3 : 0; // 0 = full, 1 = lower resolution, 2 = no real shadows, 3 = lowest
-    const baseRatio = Math.min(devicePixelRatio || 1, QUALITY === 'high' ? 2 : racers.length > 1 ? 1.25 : 1.5);
-    const applyLevel = () => { renderer.setPixelRatio(level === 0 ? baseRatio : level < 3 ? Math.min(baseRatio, 1) : 0.75); world.sun.castShadow = level < 2; shadowFrames = 3; };
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.toneMapping = THREE.NeutralToneMapping; renderer.toneMappingExposure = 1.0; // keeps colours rich where the sun is bright instead of clipping to white
+    // start on Balanced for three or more views, High for one or two; then follow the measured frame rate
+    const many = racers.length >= 3; let shadowFrames = 3, level = QUALITY === 'low' ? 0 : QUALITY === 'high' ? 2 : QUALITY === 'balanced' ? 1 : many ? 1 : 2, upTried = false, holdT = 0;
+    const pick = (v) => (Array.isArray(v) ? v[many ? 1 : 0] : v); let reach = 300, lodD = 250;
+    const applyLevel = () => { const P = PRESETS[level]; renderer.setPixelRatio(Math.min(devicePixelRatio || 1, pick(P.ratio))); world.setShadow(P.shadow); world.setDensity(pick(P.trees), pick(P.small)); reach = pick(P.reach); lodD = pick(P.lod); shadowFrames = 3; if (qEl) qEl.textContent = P.name; };
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false;
     renderer.setScissorTest(true); stage.appendChild(renderer.domElement);
-    const scene = new THREE.Scene();
-    const world = buildWorld(scene, T, renderer, assets), FX = world.particles;
+    const scene = new THREE.Scene(); let qEl = null;
+    const world = buildScene(scene, T, renderer, assets), FX = world.particles;
+    // skid marks: one mesh, a fixed pool of strips that the oldest marks are recycled from
+    const SK = 900, skPos = new Float32Array(SK * 12), skIdx = []; for (let k = 0; k < SK; k++) skIdx.push(k * 4, k * 4 + 1, k * 4 + 2, k * 4 + 2, k * 4 + 1, k * 4 + 3);
+    const skGeo = new THREE.BufferGeometry(); skGeo.setAttribute('position', new THREE.BufferAttribute(skPos, 3)); skGeo.setIndex(skIdx);
+    const skids = new THREE.Mesh(skGeo, new THREE.MeshBasicMaterial({ color: 0x0c0c0e, transparent: true, opacity: 0.32, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })); skids.frustumCulled = false; scene.add(skids);
+    let skN = 0, skDirty = false;
+    const skid = (x0, z0, x1, z1) => { const dx = x1 - x0, dz = z1 - z0, l = Math.hypot(dx, dz); if (l < 0.05 || l > 6) return; const nx = (-dz / l) * 0.17, nz = (dx / l) * 0.17, o = (skN++ % SK) * 12; skPos.set([x0 - nx, 0.115, z0 - nz, x0 + nx, 0.115, z0 + nz, x1 - nx, 0.115, z1 - nz, x1 + nx, 0.115, z1 + nz], o); skDirty = true; };
     const white = new THREE.Color(0xffffff), smoke = new THREE.Color(0xd8d8d8), fire = new THREE.Color(0xffb02a), fire2 = new THREE.Color(0xff5a1a), cyan = new THREE.Color(0x8ff4ff), spark = new THREE.Color(0xffe14a);
     const overlay = document.createElement('div'); overlay.className = 'overlay'; stage.appendChild(overlay);
     const big = document.createElement('div'); big.className = 'bigmsg'; stage.appendChild(big);
 
     // cars: humans first, then CPU cars so there are always at least four on track
     const cars = [];
-    const mk = (p, typeIdx, color, name, botModel) => {
-      const type = CARS[typeIdx], mesh = buildCar(type.key, color, assets, botModel); scene.add(mesh);
-      const tag = nameTag(name, color); tag.position.y = mesh.userData.tagY; mesh.add(tag); mesh.userData.blob = mesh.userData.blob || mesh.children.find((o) => o.isMesh && o.geometry.type === 'PlaneGeometry');
+    const wheelBatch = new WheelBatch(scene);
+    const mk = (p, typeIdx, color, name) => {
+      const type = CARS[typeIdx], mesh = buildRaceCar(type.key, color, { number: cars.length + 1 }); scene.add(mesh); wheelBatch.add(mesh);
+      const tag = nameTag(name, color); tag.position.y = mesh.userData.tagY / mesh.scale.y; tag.scale.set(5.2 / mesh.scale.x, 1.3 / mesh.scale.y, 1); mesh.add(tag);
       const shield = new THREE.Mesh(new THREE.SphereGeometry(3.6, 20, 14), new THREE.MeshBasicMaterial({ color: 0x66e0ff, transparent: true, opacity: 0.28, depthWrite: false })); shield.visible = false; scene.add(shield);
       const ring = new THREE.Mesh(new THREE.RingGeometry(0.86, 1, 48), new THREE.MeshBasicMaterial({ color: 0xffe14a, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false }));
       ring.rotation.x = -Math.PI / 2; ring.visible = false; scene.add(ring);
@@ -101,14 +118,13 @@ export function start(ctx) {
       const beam = new THREE.Line(beamG, new THREE.LineBasicMaterial({ color: 0x9fe8ff })); beam.visible = false; beam.frustumCulled = false; scene.add(beam);
       const c = { p, bot: !p, name, color, type, mesh, tag, ring, flash, beam, shield, item: null, shieldT: 0, zapT: 0, botItemT: 0, x: 0, z: 0, h: 0, speed: 0, idx: 0, total: 0, lat: 0, steer: 0, gas: false, brake: false,
         boostT: 0, ghostT: 0, frozenT: 0, spinT: 0, kx: 0, kz: 0, cd: 4, finished: false, place: 0, stuckT: 0, lastTotal: 0, ringT: 0, flashT: 0, beamT: 0, noteT: 0,
-        skill: rnd(0.86, 0.95), botLat: rnd(-0.5, 0.5), botPw: rnd(3, 9), ready: false, emit: 0 };
-      mesh.traverse((o) => { if (o.isMesh) o.castShadow = false; }); if (mesh.userData.blob) mesh.userData.blob.material.opacity = 0.55; // cars use a soft blob shadow, so the big shadow map is drawn once and never again
+        skill: rnd(0.86, 0.95), botLat: rnd(-0.5, 0.5), botPw: rnd(3, 9), ready: false, emit: 0, pitch: 0, lastSpeed: 0, skL: null, skR: null }; // cars use a soft contact shadow, so the big shadow map is drawn once and never again
       cars.push(c); return c;
     };
     racers.forEach((p) => mk(p, picks.get(p.id), p.color, p.name));
-    const botCols = ['#b9bec6', '#d6c38a', '#8fa0bd'];
-    botPlayers.slice(0, 8 - cars.length).forEach((bp, b) => mk(null, (b * 2 + 1) % CARS.length, bp.color, bp.name, BOT_MODELS[b % BOT_MODELS.length])); // lobby bots race as named CPU cars
-    for (let b = botPlayers.length; cars.length < 4; b++) mk(null, (b * 2 + 1) % CARS.length, botCols[b % 3], 'CPU ' + (b + 1), BOT_MODELS[b % BOT_MODELS.length]);
+    const botCols = ['#c9ccd2', '#3a3d45', '#e9e2cf'];
+    botPlayers.slice(0, 8 - cars.length).forEach((bp, b) => mk(null, (b * 2 + 1) % CARS.length, bp.color, bp.name)); // lobby bots race as named CPU cars
+    for (let b = botPlayers.length; cars.length < 4; b++) mk(null, (b * 2 + 1) % CARS.length, botCols[b % 3], 'CPU ' + (b + 1));
     cars.forEach((c, i) => {
       const row = Math.floor(i / 2), side = i % 2 ? 1 : -1, idx = (T.N - 6 - row * 5 + T.N) % T.N, lat = side * T.hw * 0.4;
       c.idx = idx; c.total = idx - T.N; c.x = T.px[idx] + T.tz[idx] * lat; c.z = T.pz[idx] - T.tx[idx] * lat; c.h = Math.atan2(T.tx[idx], T.tz[idx]); c.lastTotal = c.total;
@@ -125,7 +141,7 @@ export function start(ctx) {
       c.hud = { el, item: el.querySelector('.item'), spd: el.querySelector('.spd b'), pos: el.querySelector('.pos'), lap: el.querySelector('.lap'), note: el.querySelector('.note'), pw: el.querySelector('.pw'), bar: el.querySelector('.pw s'), cache: {} };
     });
     cars.filter((c) => c.bot).forEach((c) => { c.tag.layers.set(0); c.tag.scale.multiplyScalar(0.7); });
-    const info = document.createElement('div'); info.className = 'rinfo'; info.innerHTML = `<h3>${T.def.name}</h3><ol></ol><canvas></canvas>`; overlay.appendChild(info);
+    const info = document.createElement('div'); info.className = 'rinfo'; info.innerHTML = `<h3>${T.def.name}</h3><ol></ol><canvas></canvas><em class="q"></em>`; overlay.appendChild(info); qEl = info.querySelector('.q');
     const mapC = info.querySelector('canvas'), mapX = mapC.getContext('2d'), standEl = info.querySelector('ol');
     let cells = [];
     function layout() {
@@ -187,9 +203,9 @@ export function start(ctx) {
     const boxGeo = new THREE.BoxGeometry(2.6, 2.6, 2.6), boxMat = new THREE.MeshBasicMaterial({ map: boxTex }), boxes = [], rockets = [], mines = [];
     for (const f of T.def.boxes || [0.22, 0.4, 0.68, 0.93]) for (const l of [-0.62, -0.21, 0.21, 0.62]) {
       const i = Math.floor(f * T.N) % T.N, x = T.px[i] + T.tz[i] * l * T.hw, z = T.pz[i] - T.tx[i] * l * T.hw;
-      const mesh = new THREE.Mesh(boxGeo, boxMat); mesh.position.set(x, 2.2, z); mesh.add(glow(0xffc62b, 7, 0.55)); scene.add(mesh);
-      boxes.push({ x, z, t: 0, mesh, ph: Math.random() * 6 });
+      boxes.push({ x, z, t: 0, ph: Math.random() * 6, rot: Math.random() * 6 });
     }
+    const boxMesh = new THREE.InstancedMesh(boxGeo, boxMat, boxes.length), boxM = new THREE.Matrix4(), boxQ = new THREE.Quaternion(), boxE = new THREE.Euler(), boxP = new THREE.Vector3(), boxS = new THREE.Vector3(); boxMesh.frustumCulled = false; scene.add(boxMesh); // all item boxes in one draw call
     const rocketGeo = new THREE.ConeGeometry(0.55, 2.6, 10); rocketGeo.rotateX(Math.PI / 2);
     const boom = (x, z) => {
       for (let k = 0; k < 46; k++) { const a = Math.random() * 6.28, v = rnd(6, 34); FX.emit(x, 1.2, z, Math.cos(a) * v, rnd(4, 26), Math.sin(a) * v, rnd(0.35, 0.9), rnd(1, 2.2), Math.random() < 0.5 ? fire : fire2, 1, 0.9, 26); }
@@ -294,38 +310,46 @@ export function start(ctx) {
     function visuals(dt) {
       for (const c of cars) {
         const m = c.mesh, u = m.userData;
-        m.position.set(c.x, u.rings ? 0.35 + Math.sin(clock * 5 + c.x) * 0.08 : 0, c.z); m.rotation.y = c.h;
+        m.position.set(c.x, 0, c.z); m.rotation.y = c.h; m.updateMatrixWorld(true);
+        u.spin += (c.speed * dt) / (u.shape.wheelR * m.scale.y); u.steerAngle = -c.steer * 0.42;
+        // body language: lean into corners, squat under power, dive under braking
+        const acc = dt > 0 ? (c.speed - c.lastSpeed) / dt : 0; c.lastSpeed = c.speed; c.pitch += (clamp(-acc * 0.0011, -0.035, 0.05) - c.pitch) * Math.min(1, dt * 8); u.chassis.rotation.x = c.pitch;
+        const braking = c.brake && c.speed > 3; u.brake[0].visible = braking; u.brake[0].material.opacity = 0.85;
         c.shield.visible = c.shieldT > 0; if (c.shield.visible) { c.shield.position.set(c.x, 1.8, c.z); c.shield.material.opacity = c.shieldT < 2 ? 0.14 + 0.14 * Math.abs(Math.sin(clock * 10)) : 0.28; }
-        u.chassis.rotation.z = c.steer * clamp(c.speed / 40, 0, 1) * 0.09;
-        for (const w of u.wheels) w.rotation.x += c.speed * dt / 0.6;
-        for (const f of u.fronts) f.rotation.y = -c.steer * 0.45;
-        if (u.rings) for (const r of u.rings) r.scale.setScalar(1 + Math.sin(clock * 12) * 0.12);
+        u.chassis.rotation.z = c.steer * clamp(c.speed / 40, 0, 1) * 0.075;
         u.flame.visible = u.flameGlow.visible = c.boostT > 0; if (u.flame.visible) u.flame.scale.set(1, rnd(0.7, 1.4), 1);
         // particles: flame, tyre smoke, dust, snow spray
         const sh = Math.sin(c.h), ch = Math.cos(c.h), rx = c.x - sh * 2.6, rz = c.z - ch * 2.6, off = Math.abs(c.lat) > T.hw + 1.5, spd = Math.abs(c.speed);
         c.emit += dt * (spd > 8 ? 60 : 0);
         while (c.emit > 1) {
           c.emit -= 1; const side = (Math.random() < 0.5 ? -1 : 1) * 1.2, wx = rx + ch * side, wz = rz - sh * side;
-          if (c.boostT > 0) FX.emit(rx + rnd(-0.3, 0.3), u.flame.position.y * 1.15 + rnd(-0.2, 0.2), rz + rnd(-0.3, 0.3), -sh * c.speed * 0.3 + rnd(-2, 2), rnd(0, 3), -ch * c.speed * 0.3 + rnd(-2, 2), rnd(0.2, 0.45), 1.1, Math.random() < 0.5 ? fire : fire2, 0.9, 0.6);
+          if (c.boostT > 0) FX.emit(rx + rnd(-0.3, 0.3), u.flame.position.y * 1.15 + rnd(-0.2, 0.2), rz + rnd(-0.3, 0.3), -sh * c.speed * 0.3 + rnd(-2, 2), rnd(0, 3), -ch * c.speed * 0.3 + rnd(-2, 2), rnd(0.16, 0.34), 0.62, Math.random() < 0.5 ? fire : fire2, 0.7, 0.6);
           else if (off) { if (Math.random() < 0.7) FX.emit(wx, 0.4, wz, rnd(-3, 3), rnd(2, 6), rnd(-3, 3), rnd(0.5, 1.1), 1.4, world.dust, 0.55, 2.4); }
           else if (world.theme === 'snow') { if (Math.random() < 0.5) FX.emit(wx, 0.3, wz, rnd(-2, 2) - sh * 3, rnd(2, 5), rnd(-2, 2) - ch * 3, rnd(0.3, 0.6), 0.55, white, 0.45, 1.6); }
           else if ((Math.abs(c.steer) > 0.7 && spd > 34) || (c.brake && spd > 20) || c.spinT > 0) FX.emit(wx, 0.35, wz, rnd(-2, 2), rnd(1.5, 4), rnd(-2, 2), rnd(0.5, 1), 1.2, smoke, 0.45, 2.6);
         }
+        // rubber laid down by the rear tyres while sliding or braking hard
+        const sliding = !off && world.theme !== 'snow' && ((Math.abs(c.steer) > 0.7 && spd > 34) || (c.brake && spd > 20) || c.spinT > 0), lx = rx + ch * 1.0, lz = rz - sh * 1.0, qx = rx - ch * 1.0, qz = rz + sh * 1.0;
+        if (sliding) { if (c.skL) { skid(c.skL[0], c.skL[1], lx, lz); skid(c.skR[0], c.skR[1], qx, qz); } c.skL = [lx, lz]; c.skR = [qx, qz]; } else c.skL = c.skR = null;
         u.iceBlock.visible = c.frozenT > 0;
         const ghost = c.ghostT > 0; if (ghost !== c._g) { c._g = ghost; for (const mt of u.mats) { mt.transparent = ghost; mt.opacity = ghost ? 0.3 : 1; mt.needsUpdate = true; } }
         if (c.ringT > 0) { c.ringT -= dt; const s = (1 - c.ringT / 0.5) * 34; c.ring.scale.setScalar(s); c.ring.material.opacity = c.ringT / 0.5; if (c.ringT <= 0) c.ring.visible = false; }
         if (c.flashT > 0) { c.flashT -= dt; c.flash.scale.setScalar(1 + (1 - c.flashT / 0.4) * 7); c.flash.material.opacity = c.flashT / 0.4; if (c.flashT <= 0) c.flash.visible = false; }
         if (c.beamT > 0) { c.beamT -= dt; const t = c.beamTarget, a = c.beam.geometry.attributes.position; a.setXYZ(0, c.x, 1.6, c.z); a.setXYZ(1, t.x, 1.6, t.z); a.needsUpdate = true; if (c.beamT <= 0) c.beam.visible = false; }
         if (c.cam) {
-          const back = 11.5 + (c.boostT > 0 ? 2.5 : 0), sh = Math.sin(c.h), ch = Math.cos(c.h);
+          // the camera pulls back and rises as the car goes faster (close and low when slow, wide when flat out), eased so it never jumps
+          const zt = clamp((Math.abs(c.speed) - 12) / 50, 0, 1) + (c.boostT > 0 ? 0.25 : 0); c.zoom = (c.zoom || 0) + (zt - (c.zoom || 0)) * (1 - Math.exp(-2.2 * dt)); const zm = c.zoom > 1 ? c.zoom : c.zoom * c.zoom * (3 - 2 * c.zoom);
+          const back = 8.4 + zm * 5.2, sh = Math.sin(c.h), ch = Math.cos(c.h);
           const tx = c.x - sh * back, tz = c.z - ch * back, k = 1 - Math.exp(-7 * dt);
-          c.camPos.x += (tx - c.camPos.x) * k; c.camPos.z += (tz - c.camPos.z) * k; c.camPos.y += (5.6 - c.camPos.y) * k;
+          c.camPos.x += (tx - c.camPos.x) * k; c.camPos.z += (tz - c.camPos.z) * k; c.camPos.y += (3.9 + zm * 2.1 - c.camPos.y) * k;
           c.look.x += (c.x + sh * 7 - c.look.x) * (1 - Math.exp(-12 * dt)); c.look.z += (c.z + ch * 7 - c.look.z) * (1 - Math.exp(-12 * dt));
           const shk = c.boostT > 0 ? 0.07 : c.spinT > 0 || c.frozenT > 0 ? 0.12 : 0; c.cam.position.set(c.camPos.x + rnd(-shk, shk), c.camPos.y + rnd(-shk, shk), c.camPos.z + rnd(-shk, shk)); c.cam.lookAt(c.look.x, 1.8, c.look.z);
-          const fov = 68 + clamp((c.speed - 50) / 40, 0, 1) * 16; if (Math.abs(fov - c.cam.fov) > 0.3) { c.cam.fov += (fov - c.cam.fov) * 0.1; c.cam.updateProjectionMatrix(); }
+          if (game && game.freeCam) { const f = game.freeCam; c.cam.position.set(f[0], f[1], f[2]); c.cam.lookAt(f[3], f[4], f[5]); } // test hook: look at the scenery from anywhere
+          const fov = 62 + Math.min(zm, 1.3) * 13; if (Math.abs(fov - c.cam.fov) > 0.15) { c.cam.fov += (fov - c.cam.fov) * 0.1; c.cam.updateProjectionMatrix(); }
         }
       }
-      for (const b of boxes) { b.mesh.visible = b.t <= 0; b.mesh.rotation.y += dt * 1.6; b.mesh.rotation.x = 0.35; b.mesh.position.y = 2.3 + Math.sin(clock * 3 + b.ph) * 0.35; }
+      wheelBatch.update(); if (skDirty) { skDirty = false; skGeo.attributes.position.needsUpdate = true; }
+      boxes.forEach((b, i) => { b.rot += dt * 1.6; boxE.set(0.35, b.rot, 0); boxQ.setFromEuler(boxE); boxP.set(b.x, 2.3 + Math.sin(clock * 3 + b.ph) * 0.35, b.z); boxS.setScalar(b.t <= 0 ? 1 : 0.0001); boxM.compose(boxP, boxQ, boxS); boxMesh.setMatrixAt(i, boxM); }); boxMesh.instanceMatrix.needsUpdate = true;
       world.update(dt, clock);
     }
     function hud() {
@@ -333,7 +357,7 @@ export function start(ctx) {
       for (const c of humans) {
         const h = c.hud, place = ord.indexOf(c), lap = clamp(Math.floor(c.total / T.N) + 1, 1, LAPS);
         const set = (k, v, fn) => { if (h.cache[k] !== v) { h.cache[k] = v; fn(v); } };
-        set('pos', place, (v) => { h.pos.innerHTML = `${v + 1}<small>${ORD[v].slice(-2)}</small>`; });
+        set('pos', place, (v) => { h.pos.innerHTML = `${v + 1}<small>/${cars.length}</small>`; });
         set('lap', c.finished ? 'FINISHED' : `LAP ${lap}/${LAPS}`, (v) => { h.lap.textContent = v; });
         set('rdy', c.cd <= 0, (v) => h.pw.classList.toggle('ready', v));
         set('spd', Math.round(Math.abs(c.speed) * 3.2 / 5) * 5, (v) => { h.spd.textContent = v; });
@@ -381,15 +405,23 @@ export function start(ctx) {
       }
       visuals(dt); hud();
       const H = innerHeight, pr = renderer.getPixelRatio();
-      frameNo++; if (shadowFrames > 0) { shadowFrames--; renderer.shadowMap.needsUpdate = true; } // static shadows: drawn for the first frames only
-      if (!QUALITY && phase !== 'done' && frameNo > 40) { fAcc += now - lastReal; fN++; if (fN >= 50) { const avg = fAcc / fN; fAcc = fN = 0; if (avg > 23 && level < 3) { level++; applyLevel(); } } } // under ~43 fps: step the graphics down
+      frameNo++; const sf = shadowFrames > 0 && world.sun.castShadow; if (shadowFrames > 0) { shadowFrames--; renderer.shadowMap.needsUpdate = true; } // static shadows: drawn for the first frames only
+      // Follow the measured frame rate. Drop a preset when it falls under about 48 fps for a second and a half; after 20 smooth
+      // seconds try the next preset up once, and if that does not hold, come back down and stay there (no flip-flopping).
+      if (!QUALITY && phase !== 'done' && frameNo > 60) {
+        fAcc += Math.min(100, now - lastReal); fN++; holdT += (now - lastReal) / 1000;
+        if (fN >= 90) { const avg = fAcc / fN; fAcc = fN = 0;
+          if (avg > 21 && level > 0) { level--; holdT = 0; applyLevel(); }
+          else if (avg < 17.6 && level < 2 && !upTried && holdT > 20) { upTried = true; level++; holdT = 0; applyLevel(); } }
+      }
       lastReal = now;
-      humans.forEach((c, i) => { const r = cells[i]; FX.mat.uniforms.scale.value = r.h * pr * 0.74; renderer.setViewport(r.x, H - r.y - r.h, r.w, r.h); renderer.setScissor(r.x, H - r.y - r.h, r.w, r.h); renderer.render(scene, c.cam); });
+      // (sf) while the shadows are being drawn, everything is shown in full so every shadow is there
+      humans.forEach((c, i) => { const r = cells[i]; world.cull(c.cam, sf ? 1e9 : reach, sf ? 1e9 : lodD); FX.mat.uniforms.scale.value = r.h * pr * 0.74; renderer.setViewport(r.x, H - r.y - r.h, r.w, r.h); renderer.setScissor(r.x, H - r.y - r.h, r.w, r.h); renderer.render(scene, c.cam); });
     }
     let lastReal = performance.now();
     raf = requestAnimationFrame(frame);
     const sim = (steps, dt = 1 / 60) => { for (let i = 0; i < steps && phase === 'race'; i++) { raceTime += dt; for (const c of cars) stepCar(c, dt); collide(); stepItems(dt); } };
-    game = { cars, T, humans, usePower, useItem, boxes, rockets, mines, renderer, layout, sim, get phase() { return phase; }, setPhase: (p) => { phase = p; } };
+    game = { cars, T, humans, usePower, useItem, boxes, rockets, mines, renderer, layout, sim, world, scene, get level() { return level; }, setLevel: (l) => { level = l; applyLevel(); }, get phase() { return phase; }, setPhase: (p) => { phase = p; } };
     window.__race = game;
   }
 
